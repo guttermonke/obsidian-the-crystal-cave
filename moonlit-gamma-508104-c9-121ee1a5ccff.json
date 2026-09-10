@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "moonlit-gamma-508104-c9",
+  "private_key_id": "121ee1a5ccff7c16dd89dddc7b1862281ffa12f0",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC0VX7/qZ18KLUZ\nIgIfm9Af2jEk6ZYOb3ZS/2GskKFmP19YVS/J6zWefS1dZf1EZOg3CdXaYdDIZL+K\nj+awgOTXjAEoCPJx3jb+uH2+74RP/egJFz8O1t0ffDTIRrB4k+PYRsPvgBez6Rly\n+Cx/KYD/wFFwMQoVdomZyYIm1dYRVEZmSRt895pPsG+9/oj3lLDq6je5jTo66F2g\nphm7bnKxPpuFmh6yMGxf23xE44ukm+epHMmzYCcCbPNQEoQxHSqfxxqf3XQX3F4+\nidlnpyE96ugqPd1ywHQ1qPYnDs8brJ3qApvmMvNXxikeLYjLAJBmnD/7GZzT6qwF\nyJUfv9gTAgMBAAECggEACNh4wPRXnpN7Q/RVw6nSQlMNk2Xxz7DKo7TrMZpr5aa4\nzThrKQMPP5WcTWHcqSeEoc6AXZSWt9MD946qHiufDgOhZY6qyx2/TNdNM7nD9Q3b\nUowqslZPxQ+ZTImgdl8AD3Jz10z33KypFulIJXn/szaCcs0KVZXZl2A5sMtPE3fI\nX7p7mX2/1SKGGS8uA83JeInnVQ1M2biMeFCSdLG/O87h9dBiQ8f+G0sJi1pOKMIO\nTCtJhOZa+gEyFso4uqjtv/OddH6YYllk7KnYRKy/si6ll+mpJB9vXAucxCoWY3TQ\nwy3GSRB0BTiCyyeX4+q9xEqXni+Nqd7hF+vVDovaQQKBgQDeLTRz+DY+sqY7jyhq\nx6bFZ2IxibLUr21MptA4G9B+U1hUybepiZcVf4LxSiqFnfKv6QUUmhOx9n5MBjwf\nrpa/Uyo70quj4pd1cqLBSGt1Pt/xNot4xLVmUvFOgk6gRI33qK9nesOOE0ZsmP9o\nNbv4ebiryAqNKk9p8GENCvrGqQKBgQDPyZOXzlY5Fm2mPlfT1gK8ZaNty6zM1GvQ\ndLV8+F4KOOLzOJDMiBZgEJER9MnkVdqqrBxZ4BPfhDhw7Oe8/mlLDn61mFAcXsAH\nox8VRFCqfRqyeW/XNlUaWZ1dH3rbQof2a+ndIEEDxGdQWXTQIzvAq1jqP93OP5h5\nSVvhS5eqWwKBgEY2VPg9Pa9Mt9nkoOo11A9YX6C2Gmy6T7lEklLY/2ecoTKSWNdc\nIwHpPRFR1eRKCRLsee2Lz6OS+VC/O6rrerpV5ufm6NUu25yDMMoSP9tallzdVvBA\nge8nURj1dzGQ2Kimh2AVXM1+a+gP5c8iBBg/J0wqOKNp9pTNIW6ExMGZAoGBAKm0\nwxzbY0Sg8tEyXd0gD3/7qy0DipCIdb39dDUrTPMgXwuzCWBjTZMMNM/rk/EvxbZb\nd5RYFSMbBFYGx4Zua2Tn48lBKzzgjgouyjY+Y3u7TdCyqgulzoAE7SefjGIDxrQW\nkx0NOMxw3sibJ3LPNAA6chZwLyJCgq+coLQzXx29AoGAbFxJmZvLhTAXetcXY42M\nw2CwUI75/XI3awGz0gVZ3Grko14HL8o77cBHoKluYeJFzOQts3YAPr+lVxlr+DbV\nskk8MjNA5ffqlAnc2HW2SIJPmmxljZKayPVQHKiToXC6eMs6VIfT8Enkb5sYOF84\nNIPlvJNZgrDxjXGbJDXTN8M=\n-----END PRIVATE KEY-----\n",
+  "client_email": "crystalcavecouncil@moonlit-gamma-508104-c9.iam.gserviceaccount.com",
+  "client_id": "117309008748900394268",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/crystalcavecouncil%40moonlit-gamma-508104-c9.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
