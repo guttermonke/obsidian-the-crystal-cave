@@ -1,3 +1,6 @@
+---
+tags:
+---
 [[Synthesis: Somatic Anchor & Archetypal Bridge]]
 I. Core Integration Framework
  * Somatic Anchoring: Physical practices (Qigong, Lomi Lomi rhythm, and th##ee Lomi stick) act as the hardware/proprioceptive base, grounding energy into direct bodily presence.
