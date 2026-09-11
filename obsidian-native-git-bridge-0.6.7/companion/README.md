@@ -23,7 +23,7 @@ Locally: open `companion/` in Android Studio, or `gradle assembleDebug`
 
 1. Install the APK (enable "install unknown apps" for your file manager).
 2. Open the **Git Bridge Companion** app: it shows a 3-step checklist with
-   live checkmarks. Step 2 asks for the permission with the standard Android
+   live checkmarks. Step 2 asks for the permission with the standar![[native-git-bridge-runner.sh]]d Android
    dialog; step 3 copies the setup command and opens Termux (paste + Enter).
    The third checkmark is verified by a real probe — the app runs the runner
    in Termux and receives the result back via the documented RUN_COMMAND
