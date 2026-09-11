@@ -1,0 +1,593 @@
+package dev.nativegitbridge.companion
+
+import android.app.Activity
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.provider.Settings
+import android.view.Gravity
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
+
+/**
+ * Setup checklist styled after Obsidian (light/dark palette follows the system
+ * theme via values-night resources).
+ *
+ * Steps are uniform card rows with a status circle (number -> checkmark);
+ * actionable steps are tappable as a whole row. Utility actions that have no
+ * checkmark semantics (re-test, app settings) are separate buttons below.
+ */
+class SetupActivity : Activity() {
+
+    private class StepRow(
+        val container: LinearLayout,
+        val circle: TextView,
+        val label: TextView,
+        val number: String
+    )
+
+    private lateinit var step1: StepRow
+    private lateinit var step2: StepRow
+    private lateinit var step3: StepRow
+    private lateinit var detail: TextView
+    /** Raw Termux error, kept small and secondary (for bug reports only). */
+    private lateinit var technical: TextView
+    /**
+     * Stacked version lines under the title: companion first, plugin and
+     * runner beneath it. The lagging part is highlighted in the danger color.
+     */
+    private lateinit var companionLine: TextView
+    private lateinit var pluginLine: TextView
+    private lateinit var runnerLine: TextView
+    /** Which of the three parts needs updating (empty when they agree). */
+    private lateinit var mismatch: TextView
+    /** Shown only when THIS app is the outdated part. */
+    private lateinit var updateButton: TextView
+    /** Shown only when the RUNNER is the outdated part: copy command + open Termux. */
+    private lateinit var updateRunnerButton: TextView
+
+    private var probeInFlight = false
+    /** True when the current probe was started by the Test button: its outcome is toasted. */
+    private var probeIsManual = false
+    private val handler = Handler()
+
+    private val probeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            probeInFlight = false
+            val bundle = intent.getBundleExtra("result")
+            val exitCode = bundle?.getInt("exitCode", -1) ?: -1
+            val err = bundle?.getInt("err", -1) ?: -1
+            val errmsg = bundle?.getString("errmsg") ?: ""
+            val ok = exitCode == 0 && errmsg.isEmpty()
+            prefs().edit()
+                .putBoolean(KEY_PROBE_OK, ok)
+                .putString(KEY_PROBE_MSG, if (ok) "" else "errmsg=$errmsg err=$err exit=$exitCode")
+                .apply()
+            // The runner prints its version on stdout precisely for this
+            // probe: learn the CURRENT number here, so an outdated-runner
+            // warning clears right after the user re-ran the installer,
+            // without waiting for Obsidian to reopen this screen.
+            val stdout = bundle?.getString("stdout") ?: ""
+            val version = Regex("NGB_RUNNER_VERSION=(\\d+)").find(stdout)?.groupValues?.get(1)
+            if (version != null) {
+                prefs().edit().putString(KEY_RUNNER_VERSION, version).apply()
+                renderVersions()
+            }
+            if (probeIsManual) {
+                probeIsManual = false
+                Toast.makeText(
+                    this@SetupActivity,
+                    if (ok) R.string.probe_ok_toast else R.string.probe_fail_toast,
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            refresh()
+        }
+    }
+
+    // ---- palette helpers -------------------------------------------------
+
+    private fun c(id: Int): Int = resources.getColor(id, theme)
+    private fun dp(v: Float): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun roundedBg(fill: Int, stroke: Int? = null): GradientDrawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(12f).toFloat()
+            setColor(fill)
+            if (stroke != null) setStroke(dp(1f), stroke)
+        }
+
+    private fun circleBg(fill: Int?, stroke: Int?): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(fill ?: 0x00000000)
+            if (stroke != null) setStroke(dp(2f), stroke)
+        }
+
+    // ---- UI construction -------------------------------------------------
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val pad = dp(16f)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+
+        // Title, then the three versions stacked underneath: companion first,
+        // plugin and runner below it; the lagging part is highlighted. The
+        // companion cannot read the vault, so plugin/runner numbers arrive as
+        // URI parameters when Obsidian opens this screen (display only) —
+        // otherwise they read "unknown".
+        root.addView(TextView(this).apply {
+            text = getString(R.string.app_name)
+            textSize = 22f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(c(R.color.text_normal))
+        })
+
+        val versionLine = { top: Float ->
+            TextView(this).apply {
+                textSize = 12f
+                typeface = Typeface.MONOSPACE
+                setTextColor(c(R.color.text_muted))
+                setPadding(0, dp(top), 0, 0)
+            }
+        }
+        companionLine = versionLine(6f)
+        pluginLine = versionLine(2f)
+        runnerLine = versionLine(2f)
+        root.addView(companionLine)
+        root.addView(pluginLine)
+        root.addView(runnerLine)
+
+        mismatch = TextView(this).apply {
+            textSize = 13f
+            setTextColor(c(R.color.danger))
+            setPadding(0, dp(6f), 0, 0)
+        }
+        root.addView(mismatch)
+
+        root.addView(sectionHeader(R.string.setup_title))
+
+        step1 = makeStepRow("1", null)
+        step2 = makeStepRow("2") {
+            requestPermissions(arrayOf(TermuxForwarder.PERMISSION), REQ_PERMISSION)
+        }
+        step3 = makeStepRow("3") { copyCommandAndOpenTermux() }
+        root.addView(step1.container)
+        root.addView(step2.container)
+        root.addView(step3.container)
+
+        detail = TextView(this).apply {
+            textSize = 13f
+            setTextColor(c(R.color.text_muted))
+            setPadding(dp(4f), dp(12f), dp(4f), dp(12f))
+        }
+        root.addView(detail)
+
+        technical = TextView(this).apply {
+            textSize = 11f
+            setTextColor(c(R.color.text_muted))
+            alpha = 0.7f
+            setPadding(dp(4f), 0, dp(4f), dp(8f))
+        }
+        root.addView(technical)
+
+        root.addView(sectionHeader(R.string.section_actions))
+        // Only shown when this app is the outdated part (see renderVersions).
+        updateButton = actionButton(R.string.btn_update_companion, primary = true) {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(BridgeActivity.APK_URL)))
+            Toast.makeText(this, R.string.update_hint, Toast.LENGTH_LONG).show()
+        }
+        updateButton.visibility = android.view.View.GONE
+        root.addView(updateButton)
+        // Only shown when the RUNNER is the outdated part: one tap copies the
+        // release-pinned install command and opens Termux to paste it into.
+        updateRunnerButton = actionButton(R.string.btn_update_runner, primary = true) {
+            copyCommandAndOpenTermux()
+        }
+        updateRunnerButton.visibility = android.view.View.GONE
+        root.addView(updateRunnerButton)
+        root.addView(actionButton(R.string.btn_test, primary = true) { startProbe(manual = true) })
+        root.addView(actionButton(R.string.btn_app_settings, primary = false) {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")
+                )
+            )
+        })
+
+        setContentView(ScrollView(this).apply {
+            addView(root)
+            setBackgroundColor(c(R.color.bg))
+        })
+
+        val filter = IntentFilter(ACTION_PROBE_RESULT)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(probeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(probeReceiver, filter)
+        }
+    }
+
+    private fun sectionHeader(textRes: Int): TextView = TextView(this).apply {
+        text = getString(textRes)
+        textSize = 13f
+        typeface = Typeface.DEFAULT_BOLD
+        isAllCaps = true
+        setTextColor(c(R.color.text_muted))
+        setPadding(dp(4f), dp(18f), dp(4f), dp(8f))
+    }
+
+    private fun makeStepRow(number: String, onClick: (() -> Unit)?): StepRow {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14f), dp(14f), dp(14f), dp(14f))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8f) }
+        }
+        val circle = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(dp(28f), dp(28f)).apply {
+                marginEnd = dp(12f)
+            }
+        }
+        val label = TextView(this).apply {
+            textSize = 15f
+            setTextColor(c(R.color.text_normal))
+            layoutParams = LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+            )
+        }
+        row.addView(circle)
+        row.addView(label)
+        if (onClick != null) row.setOnClickListener { onClick() }
+        return StepRow(row, circle, label, number)
+    }
+
+    private fun actionButton(textRes: Int, primary: Boolean, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = getString(textRes)
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dp(14f), dp(13f), dp(14f), dp(13f))
+            setTextColor(if (primary) c(R.color.on_accent) else c(R.color.text_normal))
+            background =
+                if (primary) roundedBg(c(R.color.accent))
+                else roundedBg(c(R.color.bg_secondary), c(R.color.border))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8f) }
+            setOnClickListener { onClick() }
+        }
+
+    // ---- state -----------------------------------------------------------
+
+    private fun style(row: StepRow, done: Boolean, pendingText: Int, doneText: Int, busy: Boolean = false) {
+        row.label.text = getString(if (done) doneText else pendingText)
+        when {
+            done -> {
+                row.circle.text = "✓"
+                row.circle.setTextColor(c(R.color.on_accent))
+                row.circle.background = circleBg(c(R.color.success), null)
+                row.container.background = roundedBg(c(R.color.bg_secondary), c(R.color.border))
+                row.container.alpha = 0.75f
+                row.container.isClickable = false
+            }
+            busy -> {
+                row.circle.text = "…"
+                row.circle.setTextColor(c(R.color.accent))
+                row.circle.background = circleBg(null, c(R.color.accent))
+                row.container.background = roundedBg(c(R.color.bg_secondary), c(R.color.accent))
+                row.container.alpha = 1f
+            }
+            else -> {
+                row.circle.text = row.number
+                row.circle.setTextColor(c(R.color.accent))
+                row.circle.background = circleBg(null, c(R.color.accent))
+                row.container.background = roundedBg(c(R.color.bg_secondary), c(R.color.accent))
+                row.container.alpha = 1f
+                row.container.isClickable = true
+            }
+        }
+    }
+
+    private fun refresh() {
+        val termuxOk = TermuxForwarder.isTermuxInstalled(this)
+        val permissionOk = TermuxForwarder.hasPermission(this)
+        val probeOk = prefs().getBoolean(KEY_PROBE_OK, false)
+        val probeMsg = prefs().getString(KEY_PROBE_MSG, "") ?: ""
+
+        style(step1, termuxOk, R.string.check_termux, R.string.check_termux)
+        style(step2, permissionOk, R.string.btn_grant, R.string.btn_grant_done)
+        style(step3, probeOk, R.string.btn_setup_termux, R.string.btn_setup_termux_done, probeInFlight)
+
+        detail.text = when {
+            // An outdated runner is NOT "ready": the probe answers, but the
+            // plugin will refuse newer actions. Show the fix, not a green light.
+            probeOk && runnerLags() -> getString(R.string.runner_outdated_detail)
+            probeOk -> getString(R.string.setup_ready)
+            probeInFlight -> getString(R.string.probe_running)
+            probeMsg.isNotEmpty() -> explainProbeFailure(probeMsg)
+            else -> getString(R.string.setup_help)
+        }
+        technical.text = if (!probeOk && probeMsg.isNotEmpty()) probeMsg else ""
+    }
+
+    /** Copy the release-pinned install command and switch to Termux (step 3 and "Update runner"). */
+    private fun copyCommandAndOpenTermux() {
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        // Pinned to this app's version == the release version, so the
+        // runner installed here matches the release the plugin came from.
+        clipboard.setPrimaryClip(
+            ClipData.newPlainText(
+                "git-bridge-setup",
+                getString(R.string.setup_command, appVersion())
+            )
+        )
+        Toast.makeText(this, R.string.setup_command_copied, Toast.LENGTH_LONG).show()
+        val launch = packageManager.getLaunchIntentForPackage(TermuxForwarder.TERMUX_PACKAGE)
+        if (launch != null) startActivity(launch)
+        else {
+            // A toast alone left the user at a dead end; open the way to GET
+            // Termux (F-Droid page, or the official site without F-Droid).
+            Toast.makeText(this, R.string.err_termux_missing, Toast.LENGTH_LONG).show()
+            BridgeActivity.openTermuxStore(this)
+        }
+    }
+
+    /** True when Obsidian reported a runner older than what the plugin needs. */
+    private fun runnerLags(): Boolean {
+        val rv = prefs().getString(KEY_RUNNER_VERSION, "")?.toIntOrNull() ?: 0
+        val rmin = prefs().getString(KEY_RUNNER_MIN, "")?.toIntOrNull() ?: 0
+        return rv != 0 && rmin != 0 && rv < rmin
+    }
+
+    /**
+     * Turn a raw Termux error into the single action that fixes it. Dumping
+     * `errmsg=Error Code: 2 ...` next to "fix the [MISSING] items above" was
+     * doubly unhelpful: the items above were green, and the real cause (one
+     * property in termux.properties) was buried in the noise.
+     */
+    private fun explainProbeFailure(msg: String): String = when {
+        msg.contains("allow-external-apps", ignoreCase = true) ->
+            getString(R.string.fail_allow_external_apps)
+        msg.contains("No such file", ignoreCase = true) ||
+            msg.contains("runner.sh", ignoreCase = true) ->
+            getString(R.string.fail_runner_missing)
+        msg.contains("Permission", ignoreCase = true) ->
+            getString(R.string.fail_permission)
+        else -> getString(R.string.fail_generic)
+    }
+
+    // ---- probe (unchanged logic) ------------------------------------------
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        storeReportedVersions(intent)
+        renderVersions()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        storeReportedVersions(intent)
+        renderVersions()
+        refresh()
+        if (TermuxForwarder.isTermuxInstalled(this) && TermuxForwarder.hasPermission(this)) {
+            startProbe(manual = false)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            unregisterReceiver(probeReceiver)
+        } catch (e: Exception) {
+            // not registered
+        }
+    }
+
+    private fun startProbe(manual: Boolean) {
+        if (probeInFlight) {
+            if (manual) Toast.makeText(this, R.string.probe_already_running, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!TermuxForwarder.hasPermission(this)) {
+            Toast.makeText(this, R.string.err_permission, Toast.LENGTH_LONG).show()
+            return
+        }
+        val broadcast = Intent(ACTION_PROBE_RESULT).setPackage(packageName)
+        val pi = PendingIntent.getBroadcast(
+            this,
+            (System.currentTimeMillis() % Int.MAX_VALUE).toInt(),
+            broadcast,
+            PendingIntent.FLAG_ONE_SHOT or TermuxForwarder.mutableFlag()
+        )
+        val result = TermuxForwarder.forward(this, pi)
+        if (result != TermuxForwarder.Result.OK) {
+            Toast.makeText(this, result.messageRes, Toast.LENGTH_LONG).show()
+            return
+        }
+        probeInFlight = true
+        probeIsManual = manual
+        if (manual) Toast.makeText(this, R.string.ok_forwarded, Toast.LENGTH_SHORT).show()
+        refresh()
+        handler.postDelayed({
+            if (probeInFlight) {
+                probeInFlight = false
+                prefs().edit()
+                    .putBoolean(KEY_PROBE_OK, false)
+                    .putString(KEY_PROBE_MSG, getString(R.string.probe_timeout))
+                    .apply()
+                if (probeIsManual) {
+                    probeIsManual = false
+                    Toast.makeText(this@SetupActivity, R.string.probe_fail_toast, Toast.LENGTH_LONG).show()
+                }
+                refresh()
+            }
+        }, 15000)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        refresh()
+        if (requestCode == REQ_PERMISSION &&
+            (grantResults.isEmpty() || grantResults[0] != PackageManager.PERMISSION_GRANTED)
+        ) {
+            Toast.makeText(this, R.string.perm_denied_hint, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun prefs() = getSharedPreferences("setup-state", MODE_PRIVATE)
+
+    private fun appVersion(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) {
+        "?"
+    }
+
+    /**
+     * Remember the plugin/runner versions Obsidian passed in, so they still
+     * show after the user leaves and comes back (e.g. via the launcher).
+     */
+    private fun storeReportedVersions(intent: Intent?) {
+        val pv = intent?.getStringExtra(EXTRA_PLUGIN_VERSION)
+        val rv = intent?.getStringExtra(EXTRA_RUNNER_VERSION)
+        val rmin = intent?.getStringExtra(EXTRA_RUNNER_MIN)
+        val rship = intent?.getStringExtra(EXTRA_RUNNER_SHIPPED)
+        val cmin = intent?.getStringExtra(EXTRA_COMPANION_MIN)
+        if (pv.isNullOrEmpty() && rv.isNullOrEmpty()) return
+        prefs().edit()
+            .putString(KEY_PLUGIN_VERSION, pv ?: "")
+            .putString(KEY_RUNNER_VERSION, rv ?: "")
+            .putString(KEY_RUNNER_MIN, rmin ?: "")
+            .putString(KEY_RUNNER_SHIPPED, rship ?: "")
+            .putString(KEY_COMPANION_MIN, cmin ?: "")
+            .apply()
+    }
+
+    /**
+     * Version verdicts follow the floor model on every part: red means BELOW
+     * a declared floor (something actually refuses to work), a plain mismatch
+     * means an update exists while everything keeps working, and a missing
+     * floor number (an older plugin that never sent it) claims nothing. The
+     * old three-way comparison had one number per part and no floors, so it
+     * branded a correct runner "stale" (it compared against the FLOOR as if
+     * that were the expected version) and colored the plugin red for it —
+     * the wrong row, on a healthy install (the user's device, 2026-08-25).
+     */
+    private fun renderVersions() {
+        val pv = prefs().getString(KEY_PLUGIN_VERSION, "") ?: ""
+        val rv = prefs().getString(KEY_RUNNER_VERSION, "") ?: ""
+        val rmin = prefs().getString(KEY_RUNNER_MIN, "") ?: ""
+        val rship = prefs().getString(KEY_RUNNER_SHIPPED, "") ?: ""
+        val cmin = prefs().getString(KEY_COMPANION_MIN, "") ?: ""
+        val pluginText = if (pv.isEmpty()) getString(R.string.ver_unknown) else pv
+        val runnerNum = rv.toIntOrNull() ?: 0
+        val runnerMin = rmin.toIntOrNull() ?: 0
+        val runnerShipped = rship.toIntOrNull() ?: 0
+        val runnerIsLagging = runnerNum != 0 && runnerMin != 0 && runnerNum < runnerMin
+        val runnerNewer = runnerNum != 0 && runnerShipped != 0 && runnerNum > runnerShipped
+        val runnerText = when {
+            runnerNum == 0 -> getString(R.string.ver_unknown)
+            runnerIsLagging -> getString(R.string.ver_runner_stale, rv, rmin)
+            else -> "v$rv"
+        }
+
+        val cmp = if (pv.isEmpty()) 0 else compareVersions(pv, appVersion())
+        val pluginBelowFloor = pv.isNotEmpty() && compareVersions(pv, PLUGIN_MIN_VERSION) < 0
+        val companionBelowFloor = cmin.isNotEmpty() && compareVersions(appVersion(), cmin) < 0
+        val companionLags = cmp > 0 || companionBelowFloor
+
+        companionLine.text = getString(R.string.ver_companion_line, appVersion())
+        pluginLine.text = getString(R.string.ver_plugin_line, pluginText)
+        runnerLine.text = getString(R.string.ver_runner_line, runnerText)
+        // Red = below a floor, nothing else: an available update is not a fault.
+        companionLine.setTextColor(c(if (companionBelowFloor) R.color.danger else R.color.text_muted))
+        pluginLine.setTextColor(c(if (pluginBelowFloor) R.color.danger else R.color.text_muted))
+        runnerLine.setTextColor(c(if (runnerIsLagging) R.color.danger else R.color.text_muted))
+
+        // This app is the older half: offer the download right here. It can
+        // open the real default browser, which Obsidian's in-app tab cannot do
+        // reliably (its downloads are discarded when the tab closes).
+        updateButton.visibility =
+            if (companionLags) android.view.View.VISIBLE else android.view.View.GONE
+        // The runner is the outdated part: the fix is one tap away.
+        updateRunnerButton.visibility =
+            if (runnerIsLagging) android.view.View.VISIBLE else android.view.View.GONE
+        mismatch.text = when {
+            pluginBelowFloor -> getString(R.string.ver_plugin_below_floor, pv, PLUGIN_MIN_VERSION)
+            companionBelowFloor -> getString(R.string.ver_companion_below_floor, appVersion(), cmin)
+            cmp < 0 -> getString(R.string.ver_update_plugin_soft, pv, appVersion())
+            companionLags -> getString(R.string.ver_update_companion_soft, appVersion(), pv)
+            runnerIsLagging -> getString(R.string.ver_update_runner, rv, rmin)
+            runnerNewer -> getString(R.string.ver_update_plugin_for_runner, rv, rship)
+            else -> ""
+        }
+    }
+
+    /** Compare dotted numeric versions; junk parts count as 0 (never invents a mismatch). */
+    private fun compareVersions(a: String, b: String): Int {
+        val pa = a.split(".")
+        val pb = b.split(".")
+        for (i in 0 until maxOf(pa.size, pb.size)) {
+            val na = pa.getOrNull(i)?.toIntOrNull() ?: 0
+            val nb = pb.getOrNull(i)?.toIntOrNull() ?: 0
+            if (na != nb) return if (na < nb) -1 else 1
+        }
+        return 0
+    }
+
+    companion object {
+        private const val REQ_PERMISSION = 42
+        private const val ACTION_PROBE_RESULT = "dev.nativegitbridge.companion.PROBE_RESULT"
+        private const val KEY_PROBE_OK = "probeOk"
+        private const val KEY_PROBE_MSG = "probeMsg"
+        private const val KEY_PLUGIN_VERSION = "pluginVersion"
+        private const val KEY_RUNNER_VERSION = "runnerVersion"
+        private const val KEY_RUNNER_MIN = "runnerMin"
+        private const val KEY_RUNNER_SHIPPED = "runnerShipped"
+        private const val KEY_COMPANION_MIN = "companionMin"
+
+        /**
+         * The oldest PLUGIN this companion works with — this app's own floor,
+         * mirroring the plugin's COMPANION_MIN_VERSION. 0.6.0 is where
+         * profiles and the pairing flow this app's trigger serves arrived.
+         */
+        const val PLUGIN_MIN_VERSION = "0.6.0"
+
+        /** Display-only metadata forwarded by BridgeActivity from the setup URI. */
+        const val EXTRA_PLUGIN_VERSION = "pluginVersion"
+        const val EXTRA_RUNNER_VERSION = "runnerVersion"
+        const val EXTRA_RUNNER_MIN = "runnerMin"
+        const val EXTRA_RUNNER_SHIPPED = "runnerShipped"
+        const val EXTRA_COMPANION_MIN = "companionMin"
+    }
+}

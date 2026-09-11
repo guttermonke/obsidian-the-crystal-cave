@@ -1,0 +1,740 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Native Git Bridge - Termux installer.
+# Usage: bash install.sh [/absolute/path/to/vault-repo] [--with-ssh]
+set -u
+
+# Output width. Termux on a phone is far narrower than a desktop terminal (the
+# default font gives roughly 60 columns in portrait), so text hard-wrapped in
+# the source at ~78 columns wrapped a SECOND time at the terminal edge, in the
+# middle of words, and the result was unreadable. Nothing here is pre-wrapped
+# any more: every message is one logical line and `say` folds it at the width
+# the terminal actually reports.
+#
+# `stty size` is asked of /dev/tty, not of stdin: the installer is normally run
+# through `curl … | bash`, where stdin is the pipe and has no size at all.
+term_cols() {
+  local c=""
+  if [ -r /dev/tty ]; then
+    # stderr is redirected BEFORE stdin on purpose: when /dev/tty exists but
+    # cannot be opened (no controlling terminal), the failing redirection is
+    # reported by the shell, and it must land in /dev/null like everything else.
+    c="$(stty size 2>/dev/null < /dev/tty | cut -d' ' -f2 || true)"
+  fi
+  [ -n "$c" ] || c="${COLUMNS:-}"
+  case "$c" in ""|*[!0-9]*) c=72 ;; esac
+  # Below ~32 the hanging indent eats the line; above ~100 long prose becomes
+  # hard to follow. Both bounds only matter for unusual terminals.
+  [ "$c" -lt 32 ] && c=32
+  [ "$c" -gt 100 ] && c=100
+  printf '%s' "$c"
+}
+NGB_COLS="$(term_cols)"
+
+# Colors, only when stdout is a terminal (a piped run — the e2e suite, a log —
+# gets plain text). The rule, user-given (2026-08-26) and refined the same
+# day from the first device screenshot: color the STATUS WORD, not the line —
+# whole-line green made entire sections read as one green wall. Positive
+# words (OK, PASSED, enabled…) are wrapped in $NGB_GREEN…$NGB_OFF inline at
+# the call site; profile ids get $NGB_YELLOW and the pairing token $NGB_BOLD
+# (the user's picks after two device rounds: yellow for ids, cyan for the
+# runner's version line, bold for the token — findable without shouting).
+# Whole-line red stays for warnings and errors ($NGB_TINT via saybad): a
+# failure is the one case where the entire line is the point.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  NGB_GREEN="$(printf '\033[32m')"
+  NGB_RED="$(printf '\033[31m')"
+  NGB_YELLOW="$(printf '\033[33m')"
+  NGB_BOLD="$(printf '\033[1m')"
+  NGB_OFF="$(printf '\033[0m')"
+else
+  NGB_GREEN=""; NGB_RED=""; NGB_YELLOW=""; NGB_BOLD=""; NGB_OFF=""
+fi
+NGB_TINT=""
+
+# Visible length of a string: the color codes this script injects are
+# invisible on screen but count in ${#…}, which would wrap colored lines
+# early. Only this script's own five codes can appear in a message, so
+# stripping exactly those is exact.
+vlen() {
+  local s="$*"
+  if [ -n "$NGB_OFF" ]; then
+    s="${s//"$NGB_GREEN"/}"; s="${s//"$NGB_RED"/}"
+    s="${s//"$NGB_YELLOW"/}"; s="${s//"$NGB_BOLD"/}"; s="${s//"$NGB_OFF"/}"
+  fi
+  printf '%s' "${#s}"
+}
+
+# Wrap on spaces, never inside a word. A word longer than the line (a path, a
+# URL, a token) is printed whole and allowed to overflow: breaking it would
+# make it impossible to select and copy, which is the one thing those lines
+# exist for. Continuations get a hanging indent so a wrapped bullet or numbered
+# step still reads as one item.
+say() {
+  local text="$*"
+  if [ -z "$text" ]; then printf '\n'; return 0; fi
+  # `indent` prefixes the CONTINUATION lines (a hanging indent). `lead` is the
+  # message's own leading whitespace, which word splitting is about to strip:
+  # a line written as "   detail…" has to keep its indent on the FIRST line too,
+  # or the sub-point ends up further left than the point it belongs to.
+  local indent="" lead=""
+  case "$text" in
+    "-- "*|"== "*) indent="   " ;;
+    "ERROR: "*)    indent="   " ;;
+    [0-9].\ *)     indent="   " ;;
+    "   "*)        indent="   "; lead="   " ;;
+  esac
+  # Word splitting below must not glob: several messages contain '*' or '?'.
+  local had_glob=off
+  case "$-" in *f*) had_glob=on ;; esac
+  set -f
+  local line="" word=""
+  for word in $text; do
+    if [ -z "$line" ]; then
+      line="$lead$word"
+    elif [ "$(( $(vlen "$line") + 1 + $(vlen "$word") ))" -le "$NGB_COLS" ]; then
+      line="$line $word"
+    else
+      printf '%s%s%s\n' "$NGB_TINT" "$line" "$NGB_OFF"
+      line="$indent$word"
+    fi
+  done
+  printf '%s%s%s\n' "$NGB_TINT" "$line" "$NGB_OFF"
+  [ "$had_glob" = on ] || set +f
+}
+
+# Whole-line red for warnings and errors (see the color rule above). The
+# green counterpart was removed the day it was added: whole-line green made
+# sections read as a green wall; positive words are colored inline instead.
+saybad() { NGB_TINT="$NGB_RED"; say "$@"; NGB_TINT=""; }
+
+# Section break: a blank line and a 20-dash rule before the title. The phone
+# screen has no scrollback landmarks, so one visual break per stage is what
+# makes a long install skimmable (user request, 2026-08-26).
+NGB_SEP="--------------------"
+section() { say ""; sayr "$NGB_SEP"; say "$*"; }
+
+# Verbatim line: a command the user is meant to copy, printed exactly as
+# written. Reflowing those would change what gets pasted.
+sayr() { printf '%s\n' "$*"; }
+
+# Errors are wrapped too: a failure message is the one line the user has to be
+# able to read, and it is usually the longest.
+fail() { saybad "ERROR: $*" >&2; exit 1; }
+
+# apt/pkg output, reshaped for a phone screen (user request, 2026-08-26).
+# What changes and why:
+# - pkg's mirror probes ("[*] (weight) url: ok") put the verdict LAST, where a
+#   narrow screen wraps it out of sight; the verdict now leads, colored, then
+#   the URL. The "[*]" is pkg's list bullet and the number its rotation
+#   weight — neither helps a person, both are dropped.
+# - "Get:" lines lead with the size, then the package and version.
+# - Index/dpkg boilerplate (Reading package lists, Unpacking, "The following
+#   packages…" lists) is dropped: it names no decision and fills the screen.
+# - apt's whole-system summary ("0 upgraded … 77 not upgraded") reads as
+#   "nothing was installed" when it is really counting packages this installer
+#   deliberately leaves alone; it is replaced with the honest count.
+# - Warnings and errors pass through, in red. Everything unrecognized passes
+#   through untouched, so a real failure is never filtered away.
+apt_filter() {
+  awk -v G="$NGB_GREEN" -v R="$NGB_RED" -v N="$NGB_OFF" '
+    { sub(/\r$/, "") }
+    /\([0-9]+\) https?:\/\/.*: (ok|bad)$/ {
+      url = substr($0, index($0, ") http") + 2)
+      if (url ~ /: ok$/) { sub(/: ok$/, "", url); printf "%sOK%s  %s\n", G, N, url }
+      else { sub(/: bad$/, "", url); printf "%sBAD%s %s\n", R, N, url }
+      next
+    }
+    /^Get:[0-9]+ / {
+      line = $0; size = ""
+      if (line ~ /\[[^]]*\]$/) {
+        q = length(line)
+        while (substr(line, q, 1) != "[") q--
+        size = substr(line, q + 1, length(line) - q - 1)
+        line = substr(line, 1, q - 1); sub(/ +$/, "", line)
+      }
+      n = split(line, f, " ")
+      what = (n >= 7) ? f[5] " " f[7] : f[n]
+      printf "GET %s  %s\n", size, what
+      next
+    }
+    /^The following packages have unmet dependencies/ { printf "%s%s%s\n", R, $0, N; inlist = 2; next }
+    inlist == 2 && /^ / { printf "%s%s%s\n", R, $0, N; next }
+    /^The following/ { inlist = 1; next }
+    inlist == 1 && /^ / { next }
+    { inlist = 0 }
+    /^(Hit:[0-9]+|Reading package lists|Building dependency tree|Reading state information|Listing\.)/ { next }
+    /^[0-9]+ packages? can be upgraded/ { next }
+    /^Run .apt list --upgradable/ { next }
+    /^Report issues at/ { next }
+    /^(Selecting previously unselected|Preparing to unpack|Unpacking )/ { next }
+    /^WARNING: apt does not have a stable CLI interface/ { next }
+    /^[0-9]+ upgraded, [0-9]+ newly installed/ {
+      printf "%sOK%s  %s new, %s upgraded. Only git, jq, openssh and what they need are touched; the rest of Termux is left alone on purpose.\n", G, N, $3, $1
+      next
+    }
+    /^(W:|E:|Err)/ { printf "%s%s%s\n", R, $0, N; next }
+    { print }
+  '
+}
+
+# Prompts must work when piped through `curl | bash` (stdin is the pipe), so we
+# talk to /dev/tty. With no terminal at all (e.g. re-run non-interactively) we
+# assume "yes" and log every decision instead of hanging.
+confirm() { # $1 question -> 0=yes
+  if [ "${NGB_ASSUME_YES:-}" = "1" ]; then say "   auto-yes: $1"; return 0; fi
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s [y/N] ' "$1" > /dev/tty
+    local yn=""; IFS= read -r yn < /dev/tty || yn=""
+    [ "$yn" = "y" ] || [ "$yn" = "Y" ]
+  else
+    say "   non-interactive: assuming yes: $1"; return 0
+  fi
+}
+
+ask_line() { # $1 prompt -> stdout answer
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s' "$1" > /dev/tty
+    local a=""; IFS= read -r a < /dev/tty || a=""
+    printf '%s' "$a"
+  else
+    printf ''
+  fi
+}
+
+# Find Obsidian vaults that are git repositories on shared storage.
+detect_vaults() {
+  local roots="/storage/emulated/0 $HOME/storage/shared /sdcard"
+  local r d v
+  { for r in $roots; do
+      [ -d "$r" ] || continue
+      find "$r/" -maxdepth 4 -type d -name .obsidian 2>/dev/null
+    done; } | while IFS= read -r d; do
+      v="$(dirname "$d")"
+      [ -d "$v/.git" ] && realpath "$v" 2>/dev/null
+    done | sort -u
+}
+
+REPO_ARG="${1:-}"
+WITH_SSH=false
+for a in "$@"; do [ "$a" = "--with-ssh" ] && WITH_SSH=true; done
+
+# One rule ABOVE the title only: every section below brings its own rule, so
+# a closing one here put two rules back to back (user report, 2026-08-26).
+sayr "$NGB_SEP"
+say "Native Git Bridge installer"
+
+# 1. Verify we are inside Termux — and WHICH Termux. The Play Store app was
+# frozen at 0.101 in 2020 and its package repository with it: nothing modern
+# installs there and the failure mode is quiet (a years-old git, no upgrades,
+# everything "works" until a feature needs a version the repo cannot give).
+# Markers, in order of certainty: TERMUX_VERSION is exported by the app since
+# 0.107, so an environment WITHOUT it is a frozen-era build; newer builds also
+# name their store in TERMUX_APK_RELEASE. A frozen REPOSITORY is caught
+# functionally in step 2, whatever the app says.
+case "${PREFIX:-}" in
+  */com.termux/*) : ;;
+  *) fail "This installer must run inside Termux (PREFIX=${PREFIX:-unset})." ;;
+esac
+if [ -z "${TERMUX_VERSION:-}" ]; then
+  saybad "!! WARNING: this looks like the abandoned Play Store Termux (pre-0.107):"
+  saybad "   TERMUX_VERSION is not set. Its package repository is frozen in 2020,"
+  saybad "   so git and everything else stay at old versions and parts of this"
+  saybad "   plugin will NOT work. Install Termux from F-Droid:"
+  saybad "   https://f-droid.org/packages/com.termux/"
+else
+  case "${TERMUX_APK_RELEASE:-}" in
+    *PLAY*)
+      saybad "!! WARNING: this Termux came from Google Play (TERMUX_APK_RELEASE=${TERMUX_APK_RELEASE})."
+      saybad "   Play builds lag behind F-Droid and their repository can hold old"
+      saybad "   packages; if git below stays under 2.42, install the F-Droid build." ;;
+  esac
+fi
+
+# 2. Packages: install what is missing, UPGRADE what can be upgraded. `pkg
+# install` alone only ensures a package exists — with a stale apt index it
+# kept a years-old git through two runner reinstalls in one day on a real
+# device — so the index is refreshed first (that is what makes `apt install`
+# an upgrade), and the version git ACTUALLY ends up at is reported and judged
+# rather than assumed. The plugin's partial-clone shedding needs
+# `repack --filter` (git 2.42+); prefetching the visible files afterwards
+# (`git backfill --sparse`) needs 2.49+.
+# apt's own output is shown rather than swallowed — the refresh is a network
+# step that can sit for minutes retrying a dead mirror, and a silent line
+# reads as a hang — but it flows through apt_filter, which reshapes it for a
+# phone screen. pipefail inside the subshell: without it the filter's own
+# exit status would mask a failed pkg run.
+section "Packages"
+say "-- Refreshing the package index (network; a dead mirror can take a while)..."
+( set -o pipefail; pkg update -y 2>&1 | apt_filter ) \
+  || saybad "   (index refresh failed; installs may use stale versions)"
+GIT_BEFORE="$(git --version 2>/dev/null | awk '{print $3}')"
+say "-- Installing/upgrading git, jq, openssh..."
+( set -o pipefail; pkg install -y git jq openssh 2>&1 | apt_filter ) || fail "pkg install failed"
+GIT_VERSION="$(git --version 2>/dev/null | awk '{print $3}')"
+if [ -n "$GIT_BEFORE" ] && [ "$GIT_BEFORE" != "$GIT_VERSION" ]; then
+  say "-- git $GIT_BEFORE -> ${NGB_GREEN}$GIT_VERSION${NGB_OFF}"
+else
+  say "-- git $GIT_VERSION"
+fi
+GIT_MAJ="${GIT_VERSION%%.*}"; GIT_REST="${GIT_VERSION#*.}"; GIT_MIN="${GIT_REST%%.*}"
+case "$GIT_MAJ$GIT_MIN" in ''|*[!0-9]*) GIT_MAJ=0; GIT_MIN=0 ;; esac
+if [ "$GIT_MAJ" -lt 2 ] || { [ "$GIT_MAJ" -eq 2 ] && [ "$GIT_MIN" -lt 42 ]; }; then
+  # The index was JUST refreshed and this is still the best git on offer, so
+  # the repository itself is outdated — the functional Play-Store marker,
+  # whatever the app's environment claimed above.
+  saybad "!! git is older than 2.42 and this is the newest this Termux can install:"
+  saybad "   the package repository itself is outdated (a Play Store build, or a"
+  saybad "   very old install). Partial-clone storage cleanup cannot shed content"
+  saybad "   on this git. Install Termux from F-Droid for current packages."
+fi
+
+# 3. Storage access: request it and WAIT for the user to accept the dialog,
+# so the installer continues by itself instead of demanding a re-run.
+if [ ! -d "$HOME/storage" ]; then
+  section "Storage access"
+  say "-- Shared storage is not linked yet. Requesting access (termux-setup-storage)."
+  say "   Please ACCEPT the Android permission dialog that appears now..."
+  termux-setup-storage || true
+  waited=0
+  while [ ! -d "$HOME/storage" ] && [ "$waited" -lt 120 ]; do
+    sleep 2
+    waited=$((waited + 2))
+  done
+  if [ -d "$HOME/storage" ]; then
+    say "-- Storage access ${NGB_GREEN}granted${NGB_OFF}; continuing."
+  else
+    fail "Storage access was not granted within 2 minutes. Accept the dialog and re-run the same command."
+  fi
+fi
+
+# 4. Allow the companion app to trigger the runner (RUN_COMMAND intent), and
+# install the runner itself. BOTH happen before any vault is looked for: they
+# depend on nothing vault-shaped, and the old order meant a brand-new device
+# (no vault yet) failed out of the installer with the property never enabled
+# and no runner installed — the ChromeOS first-run hit exactly that. The
+# property only permits apps that ALSO hold the RUN_COMMAND permission, which
+# the user grants per-app in Android settings.
+section "Runner"
+TP="$HOME/.termux/termux.properties"
+mkdir -p "$HOME/.termux"
+if ! grep -Eq '^\s*allow-external-apps\s*=\s*true\s*$' "$TP" 2>/dev/null; then
+  printf '\nallow-external-apps=true\n' >> "$TP"
+  command -v termux-reload-settings >/dev/null 2>&1 && termux-reload-settings || true
+  say "-- ${NGB_GREEN}Enabled${NGB_OFF} allow-external-apps in ~/.termux/termux.properties (needed for the companion app)."
+else
+  say "-- allow-external-apps already ${NGB_GREEN}enabled${NGB_OFF}."
+fi
+
+CONF_DIR="$HOME/.config/native-git-bridge"
+PROFILES_DIR="$CONF_DIR/profiles"
+mkdir -p "$PROFILES_DIR"
+chmod 700 "$CONF_DIR" "$PROFILES_DIR"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RUNNER_SRC="$SCRIPT_DIR/native-git-bridge-runner.sh"
+[ -f "$RUNNER_SRC" ] || fail "runner script not found next to installer: $RUNNER_SRC"
+cp "$RUNNER_SRC" "$CONF_DIR/runner.sh"
+chmod 700 "$CONF_DIR/runner.sh"
+say "-- Runner ${NGB_GREEN}successfully${NGB_OFF} installed to $CONF_DIR/runner.sh."
+# Migrate an existing single-repo config before looking for a profile: the
+# runner does it on its first run, so one implementation covers both paths.
+# NGB_SCAN_ROOTS="" keeps this run from scanning shared storage - it is here to
+# migrate, and a scan of a full phone would look like a hang.
+#
+# The run also drains anything already queued — a pending sync or pull is a
+# network operation that can take minutes — so it runs in interactive mode:
+# the runner narrates each step to this terminal instead of looking hung
+# (the same reason apt's output is shown above).
+say "-- First runner pass (config migration; drains any queued requests — live output follows)..."
+NGB_SCAN_ROOTS="" "$CONF_DIR/runner.sh" interactive || true
+
+# 5. Repository path: use the argument, otherwise auto-detect vaults
+# (folders on shared storage containing both .obsidian and .git).
+section "Vault"
+if [ -z "$REPO_ARG" ]; then
+  say "-- No path given; scanning shared storage for Obsidian vaults with a git repo..."
+  VAULTS="$(detect_vaults)"
+  COUNT="$(printf '%s\n' "$VAULTS" | grep -c . || true)"
+  if [ "$COUNT" -eq 1 ]; then
+    REPO_ARG="$VAULTS"
+    say "-- Found exactly one: $REPO_ARG"
+  elif [ "$COUNT" -gt 1 ]; then
+    say "-- Found several vaults:"
+    printf '%s\n' "$VAULTS" | nl -w2 -s'. '
+    PICK="$(ask_line 'Enter the number of the vault to use: ')"
+    REPO_ARG="$(printf '%s\n' "$VAULTS" | sed -n "${PICK}p")"
+    [ -n "$REPO_ARG" ] || fail "Invalid selection."
+  else
+    # Not a failure. Everything a vaultless device CAN have is already
+    # installed above, and the plugin pairs a new vault by itself: it writes a
+    # claim file and the runner adopts it on its next idle run, token minted
+    # here in Termux. This is the ordinary first run on a brand-new device.
+    say "-- No vault with a git repository was found, and none was named."
+    say "   The runner and the companion permission are installed anyway."
+    section "Done (runner installed; no vault paired yet)"
+    say "Finish from inside Obsidian: open (or create) your vault, enable the"
+    say "plugin in Settings -> Native Git Bridge, and use 'Set up repository'."
+    say "It pairs this vault first (no token copying), then creates or clones"
+    say "the repository without leaving the app."
+    say "Re-running this installer with the vault's path also works:"
+    sayr "     bash install.sh /storage/emulated/0/<YourVault>"
+    exit 0
+  fi
+fi
+REPO_DIR="$REPO_ARG"
+[ -d "$REPO_DIR" ] || fail "Directory does not exist: $REPO_DIR"
+
+# 7+8. Verify repository; explain safe.directory if needed (repo on shared
+# storage is usually owned by a different uid, which new git versions reject).
+if ! git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if git -C "$REPO_DIR" rev-parse --is-inside-work-tree 2>&1 | grep -qi 'dubious ownership'; then
+    say "-- Git rejected the repository because of 'dubious ownership' (normal for shared storage). The following EXPLICIT global change marks only this directory as safe:"
+    sayr "     git config --global --add safe.directory \"$REPO_DIR\""
+    confirm "Apply it now?" || fail "Cannot continue without safe.directory. Nothing was changed."
+    git config --global --add safe.directory "$REPO_DIR"
+    git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "Still not a git work tree."
+  else
+    fail "Not a git work tree: $REPO_DIR"
+  fi
+fi
+say "-- Repository ${NGB_GREEN}OK${NGB_OFF}: $REPO_DIR"
+
+# 9. Verify sparse checkout (informational; sparse is supported, not required).
+SPARSE=$(git -C "$REPO_DIR" config --get core.sparseCheckout 2>/dev/null || true)
+if [ "$SPARSE" = "true" ]; then
+  say "-- Sparse checkout: ${NGB_GREEN}ENABLED${NGB_OFF} ($(git -C "$REPO_DIR" sparse-checkout list 2>/dev/null | wc -l | tr -d ' ') patterns)"
+else
+  say "-- Sparse checkout: not enabled (that's fine if you don't use it)."
+fi
+
+# 6. Profile + token for this vault (the runner itself went in at step 4).
+# One profile per vault: profiles/<id>.conf, mode 600, its own token. Running
+# this installer for a second vault ADDS a profile; it never overwrites the
+# first one (which used to leave that vault silently unanswered).
+profile_value() { # $1 file, $2 key
+  sed -n "s/^$2=\"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" "$1" | head -1
+}
+
+# Reuse the profile of THIS repository if it already has one (re-running the
+# installer must not re-pair a working vault), otherwise create a new one.
+PROFILE_FILE=""
+REPO_REAL="$(realpath "$REPO_DIR" 2>/dev/null || printf '%s' "$REPO_DIR")"
+for f in "$PROFILES_DIR"/*.conf; do
+  [ -f "$f" ] || continue
+  p="$(profile_value "$f" NGB_REPO_DIR)"
+  [ -n "$p" ] || continue
+  if [ "$(realpath "$p" 2>/dev/null || printf '%s' "$p")" = "$REPO_REAL" ]; then
+    PROFILE_FILE="$f"; break
+  fi
+done
+
+RUNTIME_DIR="$REPO_DIR/.obsidian/plugins/native-git-bridge/runtime"
+if [ -n "$PROFILE_FILE" ]; then
+  PROFILE_ID="$(profile_value "$PROFILE_FILE" NGB_PROFILE_ID)"
+  TOKEN="$(profile_value "$PROFILE_FILE" NGB_TOKEN)"
+  say "-- Existing profile for this vault reused: ${NGB_YELLOW}$PROFILE_ID${NGB_OFF} (token ${NGB_GREEN}kept${NGB_OFF})."
+else
+  PROFILE_ID="p-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  TOKEN="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  PROFILE_FILE="$PROFILES_DIR/$PROFILE_ID.conf"
+  say "-- New profile for this vault: ${NGB_YELLOW}$PROFILE_ID${NGB_OFF} (its own token)."
+fi
+cat > "$PROFILE_FILE" <<CONF
+NGB_PROFILE_FORMAT=1
+NGB_PROFILE_ID="$PROFILE_ID"
+NGB_REPO_DIR="$REPO_DIR"
+NGB_RUNTIME_DIR="$RUNTIME_DIR"
+NGB_TOKEN="$TOKEN"
+CONF
+chmod 600 "$PROFILE_FILE"
+# "(chmod 600)" said nothing to the user (their question, 2026-08-26); say
+# what the mode MEANS instead of naming it.
+say "-- Profile ${NGB_GREEN}written${NGB_OFF} (only this Termux user can read it)."
+
+# Every profile on the device, numbered, with the one just written marked.
+#
+# A bare count answers "how many" but not "which of them are still real", and
+# the failure this exists to catch is accumulation: a vault that was moved or
+# deleted leaves a profile behind, and the only visible symptom is that the
+# number of profiles quietly exceeds the number of repositories on the phone.
+# Naming each directory, and saying which no longer holds a repository, turns
+# that into something the reader can act on. Nothing is deleted here: a profile
+# carries the vault's token, and removing one is the user's decision.
+list_profiles() {
+  total=0
+  for f in "$PROFILES_DIR"/*.conf; do
+    [ -f "$f" ] || continue
+    total=$(( total + 1 ))
+  done
+  [ "$total" -gt 0 ] || return 0
+  n=0
+  mine=0
+  for f in "$PROFILES_DIR"/*.conf; do
+    [ -f "$f" ] || continue
+    n=$(( n + 1 ))
+    [ "$f" = "$PROFILE_FILE" ] && mine="$n"
+  done
+  section "Profiles on this device: $total (this vault is #$mine)"
+  n=0
+  for f in "$PROFILES_DIR"/*.conf; do
+    [ -f "$f" ] || continue
+    n=$(( n + 1 ))
+    pid="$(profile_value "$f" NGB_PROFILE_ID)"
+    dir="$(profile_value "$f" NGB_REPO_DIR)"
+    mark=""
+    [ "$f" = "$PROFILE_FILE" ] && mark="  <- this vault"
+    state=""
+    if [ ! -d "$dir" ]; then
+      state="  MISSING (directory is gone)"
+    elif ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+      state="  NOT A REPOSITORY (no git work tree there)"
+    fi
+    sayr "  $n. ${NGB_YELLOW}${pid:-<unreadable>}${NGB_OFF}  ${dir:-<unreadable>}$state$mark"
+  done
+  say "One runner drains all of them. A profile you no longer want is one file:"
+  sayr "  rm $PROFILES_DIR/<profile-id>.conf"
+  say ""
+}
+list_profiles
+# How many OTHER vaults this device already serves. `total` is set by
+# list_profiles (0 when there are no profiles at all). Used by the SSH branch
+# below to decide whether a second account is likely; it was read there
+# without ever being set, which under `set -u` killed the installer on the
+# one path that reached it (found reading the code, 2026-08-26).
+OTHER_COUNT=0
+[ "${total:-0}" -gt 0 ] && OTHER_COUNT=$(( total - 1 ))
+
+# 5b. Nested vaults: a vault opened INSIDE another vault's repository is its own
+# repository, and the outer one would otherwise offer the inner working tree for
+# staging. The exclusion goes into the OUTER repository's .git/info/exclude:
+# device-local (only this device has both vaults), never synced, and it never
+# touches a tracked file such as .gitignore.
+OUTER=""
+probe="$(dirname "$REPO_DIR")"
+while [ "$probe" != "/" ] && [ -n "$probe" ]; do
+  if [ -d "$probe/.git" ]; then OUTER="$probe"; break; fi
+  probe="$(dirname "$probe")"
+done
+if [ -n "$OUTER" ]; then
+  REL="${REPO_DIR#"$OUTER"/}"
+  OUTER_EXCLUDE="$OUTER/.git/info/exclude"
+  mkdir -p "$(dirname "$OUTER_EXCLUDE")"
+  if [ -s "$OUTER_EXCLUDE" ] && [ "$(tail -c 1 "$OUTER_EXCLUDE" | od -An -tx1 | tr -d ' \n')" != "0a" ]; then
+    printf '\n' >> "$OUTER_EXCLUDE"
+  fi
+  if grep -qxF "/$REL/" "$OUTER_EXCLUDE" 2>/dev/null; then
+    say "-- This vault sits inside the repository $OUTER; it is already excluded there."
+  else
+    printf '/%s\n' "$REL" >> "$OUTER_EXCLUDE"
+    say "-- This vault sits INSIDE another repository: $OUTER"
+    say "   Added '/$REL/' to $OUTER_EXCLUDE (local only, nothing tracked was changed), so the outer repository never records this vault's files."
+  fi
+fi
+
+# 5c. Authentication - adapts to what you already use (PAT over HTTPS,
+# credential helper, or SSH) and is configured PER REPOSITORY, so two vaults can
+# use two different accounts. Credentials never leave Termux and never reach
+# the plugin, a result file or any log.
+section "Authentication"
+CREDS_DIR="$CONF_DIR/creds"
+PROFILE_CREDS="$CREDS_DIR/$PROFILE_ID"
+
+# git's credential-store format is `https://username:password@host`. A line
+# whose userinfo has NO colon serves a username and no password, so every
+# non-interactive fetch dies asking for the password the file was supposed to
+# hold. That is exactly what a token-as-username remote URL produces when its
+# userinfo is copied verbatim (a real device lost its working auth to this:
+# `https://TOKEN@github.com/...` worked as a URL, because basic auth sends
+# "TOKEN:" with an empty password — the file line needs that colon spelled
+# out). Adding `:` preserves exactly the authentication the URL performed.
+# Runs on every install, so re-running the installer heals an affected file.
+normalize_cred_file() {
+  [ -f "$PROFILE_CREDS" ] || return 0
+  sed -i 's#^\(https://[^:@/]*\)@#\1:@#' "$PROFILE_CREDS" 2>/dev/null || true
+}
+normalize_cred_file
+
+# credential.helper is multi-valued and ACCUMULATES across scopes: helpers are
+# asked system, then global, then local, and the FIRST that answers wins, so a
+# global helper silently shadows this repository's own file (a real device
+# could not commit until the global credentials were deleted). An empty value
+# in the local config resets the inherited list, which makes the profile's
+# file authoritative. Idempotent: both lines are rewritten from scratch.
+set_local_cred_helper() {
+  git -C "$REPO_DIR" config --local --unset-all credential.helper 2>/dev/null || true
+  git -C "$REPO_DIR" config --local --add credential.helper ''
+  git -C "$REPO_DIR" config --local --add credential.helper "store --file=$PROFILE_CREDS"
+}
+
+REMOTE_URL="$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
+case "$REMOTE_URL" in
+  https://*@*)
+    say "-- HTTPS remote with credentials embedded in the URL detected."
+    say "   This works, but the token then appears in .git/config."
+    if confirm "Move the token into this repository's own credential file (chmod 600) and clean the URL?"; then
+      CREDS="${REMOTE_URL#https://}"; CREDS="${CREDS%%@*}"
+      # Token-as-username (no colon): the URL authenticated with an empty
+      # password, so the stored line must say so — see normalize_cred_file.
+      case "$CREDS" in *:*) : ;; *) CREDS="$CREDS:" ;; esac
+      HOSTPATH="${REMOTE_URL#https://*@}"
+      HOSTONLY="${HOSTPATH%%/*}"
+      mkdir -p "$CREDS_DIR"; chmod 700 "$CREDS_DIR"
+      printf 'https://%s@%s\n' "$CREDS" "$HOSTONLY" >> "$PROFILE_CREDS"
+      chmod 600 "$PROFILE_CREDS"
+      set_local_cred_helper
+      git -C "$REPO_DIR" remote set-url origin "https://$HOSTPATH"
+      say "-- Token ${NGB_GREEN}moved${NGB_OFF} to $PROFILE_CREDS (this repository only); remote URL cleaned."
+    else
+      say "-- Left as is (the bridge redacts credentials from all logs and results)."
+    fi
+    ;;
+  https://*)
+    HELPER="$(git -C "$REPO_DIR" config --local --get credential.helper 2>/dev/null || true)"
+    if [ -z "$HELPER" ]; then
+      GLOBAL_HELPER="$(git config --global --get credential.helper 2>/dev/null || true)"
+      say "-- HTTPS remote without a repository-local credential helper: pushes from the bridge would fail, or would silently use another vault's account (the runner never prompts)."
+      if confirm "Give this repository its own credential file ($PROFILE_CREDS)?"; then
+        mkdir -p "$CREDS_DIR"; chmod 700 "$CREDS_DIR"
+        : >> "$PROFILE_CREDS"; chmod 600 "$PROFILE_CREDS"
+        set_local_cred_helper
+        say "-- credential.helper set for this repository only (with the empty first value that stops a global helper answering ahead of it). Run this once in Termux and enter your PAT as the password; it is reused non-interactively after that:"
+        sayr "     git -C \"$REPO_DIR\" pull"
+      elif [ -n "$GLOBAL_HELPER" ]; then
+        say "-- Falling back to the global credential helper '$GLOBAL_HELPER'."
+      fi
+    else
+      say "-- HTTPS remote with a repository-local credential helper: ${NGB_GREEN}OK${NGB_OFF}, this vault's PAT will be used."
+    fi
+    ;;
+  git@*|ssh://*)
+    SSH_KEY="$HOME/.ssh/id_ed25519"
+    LOCAL_SSH="$(git -C "$REPO_DIR" config --local --get core.sshCommand 2>/dev/null || true)"
+    if [ -n "$LOCAL_SSH" ]; then
+      say "-- SSH remote with a repository-local key configuration: OK."
+    elif [ ! -f "$SSH_KEY" ]; then
+      mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+      ssh-keygen -t ed25519 -N "" -f "$SSH_KEY" -C "native-git-bridge@termux" >/dev/null
+      say "-- Generated SSH key $SSH_KEY (add the public key to your repository):"
+      cat "$SSH_KEY.pub"
+    else
+      say "-- SSH remote with an existing key: OK."
+      if [ "$OTHER_COUNT" -gt 0 ] || [ "$WITH_SSH" = true ]; then
+        if confirm "Use a SEPARATE ssh key for this vault (needed for a different account)?"; then
+          NEWKEY="$HOME/.ssh/ngb-$PROFILE_ID"
+          [ -f "$NEWKEY" ] || ssh-keygen -t ed25519 -N "" -f "$NEWKEY" -C "native-git-bridge@termux ($PROFILE_ID)" >/dev/null
+          git -C "$REPO_DIR" config --local core.sshCommand "ssh -i $NEWKEY -o IdentitiesOnly=yes"
+          say "-- This repository now uses $NEWKEY. Add the public key to that account:"
+          cat "$NEWKEY.pub"
+        fi
+      fi
+    fi
+    ;;
+  "")
+    saybad "-- WARNING: no 'origin' remote configured; pull/push will fail until you add one."
+    ;;
+esac
+
+# Non-interactive auth self-test (fails fast instead of hanging).
+if [ -n "$REMOTE_URL" ]; then
+  say "-- Checking non-interactive access to the remote (up to 30 s)..."
+  if GIT_TERMINAL_PROMPT=0 timeout 30 git -C "$REPO_DIR" ls-remote --heads origin >/dev/null 2>&1; then
+    say "-- Remote authentication check ${NGB_GREEN}PASSED${NGB_OFF} (non-interactive ls-remote)."
+  else
+    saybad "-- WARNING: non-interactive access to the remote FAILED. The bridge will not be able to fetch or push until credentials work without a prompt (expired PAT? missing helper?)."
+  fi
+fi
+
+# 6. Exclude the runtime dir locally (never synced).
+GIT_DIR_PATH="$(git -C "$REPO_DIR" rev-parse --git-dir)"
+case "$GIT_DIR_PATH" in
+  /*) : ;;
+  *) GIT_DIR_PATH="$REPO_DIR/$GIT_DIR_PATH" ;;
+esac
+EXCLUDE_FILE="$GIT_DIR_PATH/info/exclude"
+mkdir -p "$(dirname "$EXCLUDE_FILE")"
+EXCLUDE_LINE=".obsidian/plugins/native-git-bridge/runtime/"
+# Append only after a newline: a file whose last line has none would otherwise
+# swallow our entry into it (and corrupt that line too).
+if [ -s "$EXCLUDE_FILE" ] && [ "$(tail -c 1 "$EXCLUDE_FILE" | od -An -tx1 | tr -d ' \n')" != "0a" ]; then
+  printf '\n' >> "$EXCLUDE_FILE"
+fi
+grep -qxF "$EXCLUDE_LINE" "$EXCLUDE_FILE" 2>/dev/null || printf '%s\n' "$EXCLUDE_LINE" >> "$EXCLUDE_FILE"
+say "-- Runtime dir excluded via .git/info/exclude (local only)."
+
+# 10. Test round trip: write a ping request and run the runner.
+#
+# The runner is single-instance locked and snapshots the queue when it starts,
+# so a runner already serving an Obsidian trigger (sync-on-close fires exactly
+# when the user closes Obsidian to open Termux) can neither see a ping written
+# after its start nor let this script's run in: that run waits 20 s on the
+# lock and exits 0 without processing. A single silent attempt therefore
+# reported "Self-test failed" on a perfectly healthy install. Retry with a
+# FRESH ping each time (a reused request would only earn an EXPIRED answer),
+# waiting for the lock to clear between attempts. The lock-exit line lands in
+# the global runner.log, not the vault's, so the failure message names both.
+run_self_test() {
+  mkdir -p "$RUNTIME_DIR/requests"
+  local attempt=1 test_id waited
+  while :; do
+    test_id="r-$(date -u +%Y%m%dT%H%M%SZ)-install$attempt"
+    cat > "$RUNTIME_DIR/requests/$test_id.json" <<REQ
+{"protocolVersion":1,"id":"$test_id","token":"$TOKEN","action":"ping","createdAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","timeoutSeconds":30,"args":{}}
+REQ
+    say "-- Self-test: running the runner (it drains anything queued first; live output follows)..."
+    "$CONF_DIR/runner.sh" interactive || fail "runner test run failed"
+    if jq -e '.ok == true' "$RUNTIME_DIR/results/$test_id.json" >/dev/null 2>&1; then
+      say "-- Self-test ${NGB_GREEN}PASSED${NGB_OFF} (ping round trip)."
+      rm -f "$RUNTIME_DIR/results/$test_id.json"
+      return 0
+    fi
+    rm -f "$RUNTIME_DIR/requests/$test_id.json"
+    if [ "$attempt" -ge 3 ]; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    if [ -d "$CONF_DIR/.runner.lock" ]; then
+      say "-- Another runner is busy (an operation Obsidian triggered); waiting for it to finish..."
+      waited=0
+      while [ -d "$CONF_DIR/.runner.lock" ] && [ "$waited" -lt 300 ]; do
+        sleep 2
+        waited=$((waited + 2))
+        if [ $((waited % 20)) -eq 0 ]; then
+          say "   ...still waiting for the other runner (${waited}s of 300)"
+        fi
+      done
+    fi
+  done
+  fail "Self-test failed. If $CONF_DIR/runner.log ends with 'another runner is active', an Obsidian-triggered operation outlasted the retries: let it finish and re-run this installer. Otherwise see $RUNTIME_DIR/runner.log"
+}
+section "Self-test"
+run_self_test
+
+# 11. Auto-pairing: the plugin imports this file on next start and deletes it,
+# so the token never has to be copied by hand. (It transits vault storage once;
+# same trust boundary as the request files themselves.)
+cat > "$RUNTIME_DIR/pairing.json" <<PAIR
+{"token":"$TOKEN","repoPath":"$REPO_DIR","profileId":"$PROFILE_ID","createdAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+PAIR
+say "-- Pairing file ${NGB_GREEN}written${NGB_OFF}; the Obsidian plugin will import the token automatically."
+
+# 12. Next steps. The former single block mixed the three actions with the
+# token, the profile id, two file paths and three notes; the user could not
+# find anything in it. Actions first, reference values after, each value on a
+# line of its own under its label with blank lines between the groups.
+section "Done. What is left (outside Termux)"
+say "1. Open Obsidian -> Settings -> Native Git Bridge -> enable on this device. The pairing token is imported automatically on plugin start."
+say "2. In the Git Bridge Companion app: grant the 'Run commands in Termux environment' permission (step 2 there) - all three checkmarks must be green."
+say "3. Authentication: whatever you already use in Termux (PAT via credential helper, token in URL, or SSH key) keeps working - see the auth check result above."
+
+section "For reference"
+say "Pairing token (only needed if the automatic import fails):"
+# Bold, not a color: the token should be findable without shouting
+# (the user's pick, 2026-08-26).
+sayr "  ${NGB_BOLD}$TOKEN${NGB_OFF}"
+say ""
+say "Profile for this vault (${NGB_YELLOW}$PROFILE_ID${NGB_OFF}):"
+sayr "  $PROFILE_FILE"
+say ""
+say "Nothing runs in the background; the runner executes only when triggered. Run it by hand any time:"
+sayr "  ~/.config/native-git-bridge/runner.sh"
+say ""
+say "Another vault? Run the same command with its path; each vault gets its own profile and token, and one runner drains them all."

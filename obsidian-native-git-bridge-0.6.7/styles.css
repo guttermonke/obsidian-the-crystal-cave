@@ -1,0 +1,1255 @@
+
+/* Phase 4: history & diff */
+/* (The line-by-line diff and per-commit row styles that used to live here
+   belonged to two modals that panes replaced; see src/ui/historyViews.ts.
+   `.ngb-output-tall` went the same way and was removed with them.) */
+
+/* Source-control style status panel (primary status surface on mobile) */
+
+/* Three regions, one scrollbar. `contentEl` of an ItemView IS `.view-content`,
+   which Obsidian scrolls by default; turning that off here and giving only the
+   middle region its own overflow is what keeps the controls on screen while a
+   long file or commit list scrolls between them.
+
+   `min-height: 0` on the middle is load-bearing: without it a flex item refuses
+   to shrink below its content, and the list would push the fixed regions off
+   the panel instead of scrolling. */
+/* `overflow-y: auto` here is the LAST-RESORT scrollbar, and the shrink order
+   below is what keeps it from ever appearing in normal use. See the two rules
+   that follow. */
+.ngb-status-view {
+  padding: var(--size-4-2) var(--size-4-2) 0;
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  box-sizing: border-box;
+}
+/* Obsidian gives `.view-content` a bottom padding on mobile so an editor's
+   text clears the on-screen keyboard; measured at 358px on a device with the
+   keyboard up. This panel has no text input at all — every field it owns lives
+   in a modal — and with `height: 100%` under border-box that padding is taken
+   OUT of the content box, so the whole layout was pushed up and a dead band
+   sat under the bottom bar.
+   It was invisible before only because the panel scrolled as one piece and the
+   band fell past the end of the scroll.
+   Written as `.view-content.ngb-status-view` rather than with `!important`:
+   that matches the specificity of the app's own `.mod-… .view-content` rule,
+   and a plugin's stylesheet is applied after the app's. */
+.view-content.ngb-status-view { padding-bottom: 0; }
+/* Room to scroll PAST the last line, in the panes that scroll their own
+   content and have no bottom bar under it. Without it the final rows stop level
+   with the bottom edge, where Android's gesture bar and Obsidian's floating
+   toolbar sit on top of them: they are rendered, and they cannot be read.
+   Roughly five line heights clears both with the last line still comfortably
+   above the chrome.
+   One variable rather than three literals, so the panes cannot drift apart.
+   The status panel is deliberately not in this list: its bottom bar already
+   holds the content clear of the edge, and the padding would only add a band
+   of nothing to scroll through. */
+.ngb-diff-view, .ngb-conflict-view, .ngb-history-view, .ngb-output-view { --ngb-scroll-tail: 7.5em; }
+.ngb-history-view .ngb-sv-body, .ngb-output-view .ngb-sv-body {
+  padding-bottom: var(--ngb-scroll-tail);
+}
+/* Written as `.view-content.<pane>` for the reason given just above: that is
+   the specificity of the app's own `.mod-… .view-content` rule, which sets the
+   bottom padding these two panes are overriding. A single class loses to it,
+   which is why the first attempt at this changed nothing on the device. */
+.view-content.ngb-diff-view, .view-content.ngb-conflict-view {
+  padding-bottom: var(--ngb-scroll-tail);
+}
+/* Both fixed regions size to their content and never scroll: everything in
+   them is a control or a state line, and a control you have to scroll to find
+   is a control you do not have. They grow when the merge banner appears and
+   shrink again when it goes; the list in between absorbs the difference.
+
+   `flex-shrink: 0` is doing two jobs. The obvious one: they keep their full
+   height. The one that matters: because they refuse to shrink and the body is
+   the only item that can, ALL shrinking lands on the body first. The panel
+   therefore degrades in a fixed order —
+
+     1. the list gives up its space, down to nothing (min-height: 0 below);
+     2. only then does the total exceed the panel, and only then does the
+        container's own scrollbar appear.
+
+   So the outer scrollbar shows up at exactly the moment the controls would
+   otherwise be clipped, and never one pixel before. A `max-height` on the head
+   cannot express that: it starts scrolling at a fixed fraction of the panel
+   whether or not there is a shortage, which is how the toolbar ended up
+   scrolled out of view while there was still room for it. */
+.ngb-sv-head, .ngb-sv-footbar { flex: 0 0 auto; }
+/* Sized against Obsidian's own bottom bars (the Outline panel's, for one), so
+   the plugin's bar does not read as a heavier, taller thing bolted underneath.
+   The icons were already the right size; the height was all padding.
+
+   The one gap left is deliberate. On mobile the drawer's tab pill ("Native
+   Git") floats OVER the bottom of the panel, and because it is an overlay no
+   layout query sees it: the geometry probe reports the panel ending exactly
+   where the bar ends, while on screen the pill covers the last rows of pixels.
+   The clearance was found by eye on the device, at 0.7 of an icon.
+
+   Expressed against `--icon-l` rather than as a number so it tracks the icon
+   size. On the phone this was tuned on, `--icon-l` measures 24px (the 20px
+   fallback here is desktop's), so this comes out at about 17px.
+
+   `overflow: hidden` is for the refresh spinner. A rotating box sweeps a
+   bounding box about 1.4x its width, transformed overflow counts toward a
+   scroll container's scrollable area, and this bar sits at the very bottom of
+   one — so a second scrollbar appeared on the panel for exactly as long as an
+   operation ran. The bar is a fixed row of controls with nothing to scroll, so
+   clipping it costs nothing, and the padding above means the spinner never
+   reaches the clip edge anyway. */
+.ngb-sv-footbar {
+  padding-bottom: calc(var(--icon-l, 20px) * 0.7);
+  overflow: hidden;
+}
+/* `min-height: 0` is what allows step 1 above: a flex item defaults to
+   min-height:auto and refuses to shrink below its content, which would push the
+   controls off the panel instead of scrolling the list. */
+.ngb-sv-body {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: hidden;
+  /* Momentum scrolling and no scroll chaining into the panel's own last-resort
+     scrollbar, or into the workspace behind it — on Android an overscroll there
+     turned into a sidebar swipe. */
+  overscroll-behavior: contain;
+}
+/* No separator rules between the regions. Their own spacing already groups
+   them, and on a phone every horizontal line is a row of file list spent on
+   decoration. The bottom bar gets one, because there it separates the controls
+   from content that scrolls underneath and would otherwise touch them. */
+.ngb-sv-toolbar {
+  display: flex; flex-wrap: wrap; gap: var(--size-4-1);
+  margin-bottom: var(--size-4-2);
+  /* Controls spread to both ends. The footbar and the history panel override
+     this with their own, more specific rules, so order does not decide it. */
+  justify-content: space-between;
+}
+.ngb-sv-footbar .ngb-sv-toolbar {
+  /* Breathing room between the separator rule and the buttons, a third of a
+     button. The buttons carry no vertical padding of their own down here (see
+     below), so their height IS the icon height, and the same custom property
+     drives both this and the clearance under the bar. */
+  padding-top: calc(var(--icon-l, 20px) / 3);
+  /* No padding under the last row: the bar's own bottom padding supplies the
+     clearance, and anything past that belongs to Obsidian's drawer chrome. */
+  padding-bottom: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  margin-bottom: 0;
+  flex-wrap: nowrap;
+}
+/* The history panel has ONE control where the status panel has eight. The
+   status toolbar is `space-between` across the full width on a phone, so its
+   refresh sits hard right — and a lone button under the same rule would sit
+   hard LEFT, which is the opposite corner. Pin it where the other panel's
+   refresh is, since the two sit in the same sidebar slot. */
+.ngb-history-view .ngb-sv-footbar .ngb-sv-toolbar,
+.ngb-output-view .ngb-sv-footbar .ngb-sv-toolbar { justify-content: flex-end; }
+.ngb-sv-icon { color: var(--text-muted); }
+.ngb-sv-icon:hover { color: var(--text-normal); }
+.ngb-sv-icon-warn:hover { color: var(--text-error); }
+/* The branch line closes the top region, so it carries the rule that separates
+   the panel's controls from its content. The rule sits at the height the top
+   region would end at with NO merge banner, and the banner hangs below it: the
+   banner is about the repository state, not another control, and anchoring the
+   line to the banner instead would make it jump every time a merge starts or
+   ends. */
+.ngb-sv-header {
+  display: flex; align-items: center; gap: var(--size-4-2); flex-wrap: wrap;
+  padding-bottom: var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: var(--size-4-2);
+}
+.ngb-sv-state { font-weight: 600; }
+.ngb-sv-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-muted); display: inline-block; flex: 0 0 auto; }
+.ngb-sv-clean { background: var(--text-success, #08b94e); }
+.ngb-sv-changed { background: var(--text-accent); }
+.ngb-sv-syncing { background: var(--text-warning, #e0ac00); }
+.ngb-sv-conflict, .ngb-sv-error { background: var(--text-error); }
+
+/* Unfinished merge / rebase. Sits in the fixed head so it cannot be scrolled
+   past: while it is showing, pull, push and sync all refuse. */
+.ngb-sv-banner {
+  border: 1px solid var(--text-warning, #e0ac00);
+  border-left-width: 3px;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  padding: var(--size-4-2);
+  margin-bottom: var(--size-4-2);
+}
+.ngb-sv-banner-title {
+  display: flex; align-items: center; gap: var(--size-4-1);
+  font-weight: 600;
+}
+.ngb-sv-banner-icon { display: inline-flex; flex: 0 0 auto; color: var(--text-warning, #e0ac00); }
+.ngb-sv-banner-icon svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+.ngb-sv-banner-detail {
+  color: var(--text-muted); font-size: var(--font-ui-smaller);
+  margin-top: var(--size-4-1);
+}
+/* Equal widths so neither exit looks like the default on a narrow phone, and
+   the labels truncate rather than wrap the row into two lines. */
+.ngb-sv-banner-actions {
+  display: flex; gap: var(--size-4-2); margin-top: var(--size-4-2);
+}
+.ngb-sv-banner-actions button {
+  flex: 1 1 0; min-width: 0;
+  font-size: var(--font-ui-smaller);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ngb-sv-banner-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Abort is destructive and is the one that undoes work, so it is filled red
+   rather than merely red-lettered. Same on both platforms. */
+.ngb-sv-banner-abort {
+  background: var(--text-error);
+  color: var(--text-on-accent, #fff);
+  border: none;
+}
+.ngb-sv-banner-abort:hover { background: var(--text-error); filter: brightness(1.1); }
+
+/* Phone: the banner lives in the panel's fixed region, so every line it takes
+   is a line of file list nobody can see. Tighter padding, shorter buttons, no
+   icon (removed in the view). The TEXT is shortened at the source rather than
+   set in a smaller font: this is the one control that must not be missed. */
+.ngb-sv-banner-compact { padding: var(--size-4-1) var(--size-4-2); }
+.ngb-sv-banner-compact .ngb-sv-banner-detail { margin-top: 2px; }
+.ngb-sv-banner-compact .ngb-sv-banner-actions { margin-top: var(--size-4-1); gap: var(--size-4-1); }
+.ngb-sv-banner-compact .ngb-sv-banner-actions button {
+  padding-top: var(--size-4-1); padding-bottom: var(--size-4-1);
+  height: auto; min-height: 0; line-height: 1.4;
+}
+
+.ngb-sv-group { margin-bottom: var(--size-4-2); }
+.ngb-sv-group-header {
+  display: flex; align-items: center; gap: var(--size-4-1);
+  cursor: pointer; padding: var(--size-4-1) 0;
+  color: var(--text-muted); font-size: var(--font-ui-small);
+}
+/* The group header uses the same right-hand column as a file row, so the title
+   takes the slack. Declared once, here: this selector used to appear twice,
+   several dozen lines apart, which is how `.ngb-hunk-bar` became a real bug. */
+.ngb-sv-group-title {
+  font-weight: 600; color: var(--text-normal);
+  flex: 1 1 auto; min-width: 0;
+}
+/* Conflicts. The same colour the rows under it use for their warning glyph and
+   their change letter, so the state is stated once at every level. */
+.ngb-sv-group-danger { color: var(--text-error); }
+.ngb-sv-chevron { display: inline-flex; align-items: center; }
+.ngb-sv-list { display: flex; flex-direction: column; }
+.ngb-sv-file {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--size-4-1); padding: 2px 0 2px var(--size-4-3);
+  border-radius: var(--radius-s);
+}
+.ngb-sv-file:hover { background: var(--background-modifier-hover); }
+.ngb-sv-file-main { display: flex; align-items: center; gap: var(--size-4-1); min-width: 0; flex: 1; cursor: pointer; }
+.ngb-sv-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* "moved from" hint on a rename/copy row: secondary, truncates before the name. */
+.ngb-sv-file-from {
+  color: var(--text-faint); font-size: var(--font-smaller);
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ngb-sv-file-kind {
+  color: var(--text-faint); font-size: var(--font-smaller);
+  flex: 0 0 auto; margin-left: var(--size-4-1);
+}
+/* The "N of M shown" control. In list layout it sits at the end of the group; in
+   tree layout one appears inside each folder that stopped short, indented with
+   the files it belongs to and therefore carrying `.ngb-sv-file` as well. Reads
+   as a note, behaves as a button: it is the only way to see the rest of what the
+   panel deliberately did not draw. */
+.ngb-sv-more-children {
+  cursor: pointer; text-decoration-line: underline; text-decoration-style: dotted;
+  color: var(--text-faint); font-size: var(--font-ui-smaller);
+}
+/* As a file row it would otherwise stretch its text across the whole width and
+   read as a file name; the underline should end where the words do.
+   `padding-top`/`padding-bottom`, never the `padding` shorthand: the indentation
+   of a nested row IS `padding-left` (see .ngb-ind-*), and this selector carries
+   two classes, so the shorthand won that cascade and reset the indent to zero.
+   The control then sat flush against the group's left edge instead of lining up
+   with the files it belongs to, which is where it was first seen on a device. */
+.ngb-sv-file.ngb-sv-more-children {
+  display: block; padding-top: 2px; padding-bottom: 2px;
+}
+.ngb-sv-empty {
+  color: var(--text-faint); font-size: var(--font-ui-smaller);
+  padding: 2px 0 2px var(--size-4-3);
+}
+/* The change letter and the file count share this column, and it is a FIXED
+   width rather than a minimum: the action buttons sit to its left on every kind
+   of row, so anything that can widen it pushes one row's buttons out of line
+   with the rest. Four characters is what the count badge is allowed (see
+   countBadge.ts), and one letter is what this one ever holds. */
+.ngb-sv-file-code {
+  flex: 0 0 auto; width: 4ch; text-align: center;
+  font-family: var(--font-monospace); font-size: var(--font-smaller);
+  color: var(--text-muted); margin-left: 2px;
+}
+.ngb-sv-file-actions { display: flex; gap: 0; flex: 0 0 auto; }
+/* File counts share the change-letter column on the right, at exactly the same
+   fixed width, which is what keeps the buttons of a folder row and of a file
+   row in one vertical line. `formatCount` guarantees at most four characters,
+   so nothing here has to grow: a four-digit count used to widen this column and
+   shift that row's buttons left of every other row's. */
+.ngb-sv-count {
+  flex: 0 0 auto; width: 4ch; text-align: center; margin-left: 2px;
+  font-family: var(--font-monospace); font-size: var(--font-smaller);
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.ngb-sv-count-sm { font-size: var(--font-ui-smaller); letter-spacing: -0.02em; }
+/* Any label that had to be shortened and answers in full on tap: the count
+   badge and the "moved from" hint on a rename row. One affordance, because it
+   is one gesture.
+   Longhands rather than the `text-decoration: underline dotted` shorthand: the
+   catalogue's CSS lint reports the shorthand as only partially supported by the
+   Obsidian baseline it checks against. The rendering is identical. */
+.ngb-reveal-target {
+  cursor: pointer; text-decoration-line: underline; text-decoration-style: dotted;
+}
+/* The revealed value (tap to show, hold to keep). */
+.ngb-reveal-pop {
+  position: fixed; transform: translateY(-100%);
+  z-index: var(--layer-popover, 30);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+  padding: var(--size-2-2) var(--size-4-2);
+  font-size: var(--font-ui-small); color: var(--text-normal);
+  /* Wraps rather than truncating: a count fits on one line anyway, and a path
+     that arrived here BECAUSE it was too long to show would be revealed
+     truncated, which answers nothing. */
+  max-width: 80vw; white-space: normal; overflow-wrap: anywhere;
+}
+/* One line per fact. A move is three of them — where it was, an arrow, where it
+   is now — because the two paths of a rename differ in one place and running
+   them together is what hides it. */
+.ngb-reveal-line { font-family: var(--font-monospace); font-size: var(--font-smaller); }
+.ngb-reveal-arrow {
+  color: var(--text-accent); text-align: center;
+  line-height: 1; padding: 2px 0;
+}
+/* Group headers carry the same action slots as folder rows. */
+.ngb-sv-group-header .ngb-sv-file-actions { flex: 0 0 auto; }
+/* Nested rows (untracked children in list layout; folders/files in tree
+   layout). One class per depth level, capped at 6. */
+.ngb-ind-1 { padding-left: var(--size-4-6); }
+.ngb-ind-2 { padding-left: calc(var(--size-4-6) * 2); }
+.ngb-ind-3 { padding-left: calc(var(--size-4-6) * 3); }
+.ngb-ind-4 { padding-left: calc(var(--size-4-6) * 4); }
+.ngb-ind-5 { padding-left: calc(var(--size-4-6) * 5); }
+.ngb-ind-6 { padding-left: calc(var(--size-4-6) * 6); }
+.ngb-sv-folder-name { font-weight: var(--font-medium); color: var(--text-muted); }
+.ngb-sv-row-chevron { flex: 0 0 auto; display: inline-flex; align-items: center; padding-right: var(--size-2-2); cursor: pointer; }
+.ngb-sv-row-chevron svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+.ngb-code-D { color: var(--text-error); }
+.ngb-code-A, .ngb-code-\? { color: var(--text-success, #08b94e); }
+.ngb-code-U { color: var(--text-error); font-weight: 700; }
+
+.ngb-sv-footer {
+  margin-top: var(--size-4-3); padding-top: var(--size-4-2);
+  border-top: 1px solid var(--background-modifier-border);
+}
+/* Operation strip: [cancel] progress ............ [log] */
+/* No margin below it, at the user's request: the runner-detail line sits
+   directly underneath, and the two read as one block. The history panel used
+   to zero this with a rule of its own; the base value is zero now and that
+   rule went with it. */
+.ngb-sv-strip {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--size-4-2); min-height: 2em;
+  margin-bottom: 0;
+}
+.ngb-sv-strip-left { display: flex; align-items: center; gap: var(--size-4-1); min-width: 0; }
+.ngb-sv-strip-right { display: flex; align-items: center; gap: var(--size-4-1); flex: 0 0 auto; }
+.ngb-sv-progress-text {
+  color: var(--text-accent); font-size: var(--font-ui-small);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ngb-sv-progress-idle { color: var(--text-muted); }
+/* The state line opens the output panel, so it has to read as something you can
+   tap. Underlined on hover rather than styled as a button: it is a label that
+   answers, and it must not compete with the icons beside it. */
+.ngb-sv-progress-tap { cursor: pointer; }
+.ngb-sv-progress-tap:hover { text-decoration: underline; }
+/* What the runner said it is doing, under the state line. One line, reserved
+   even while empty: the min-height is what keeps the repository state below
+   from jumping the moment the first progress line arrives. Muted and smaller
+   than the state line above it, because it changes every step and must not
+   compete with the one line that says which operation is running. */
+.ngb-sv-progress-detail {
+  min-height: 1.5em;
+  font-size: var(--font-ui-smaller); color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-bottom: var(--size-4-1);
+}
+
+/* ---- output panel: what Termux is saying, while it says it ---------------- */
+/* A log pane, so: monospace, no wrapping, its own scroller. The height is a
+   share of the panel rather than a fixed number of lines, because the whole
+   point is to see as much of the stream as the screen allows. */
+/* No vertical scroller of its own: the panel body above it already scrolls,
+   and a scroller inside a scroller means the one under the finger is always
+   the wrong one. Horizontal stays local, for the long lines. */
+.ngb-out-stream {
+  margin: 0 0 var(--size-4-2) 0;
+  padding: var(--size-4-2);
+  overflow-x: auto;
+  overflow-y: visible;
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+  white-space: pre;
+  tab-size: 4;
+}
+/* A console field, deliberately dark in BOTH themes — the user asked for the
+   contrast a terminal has, not a tinted panel. Fixed colours rather than the
+   theme variables because the variables flip with the theme, and a console
+   that turns white in the light theme is exactly what this replaces. */
+.theme-light .ngb-out-stream { background: #1f2023; color: #d6d6d6; }
+.theme-dark .ngb-out-stream { background: #101114; color: var(--text-normal); }
+.ngb-out-stream code { white-space: pre; font-family: var(--font-monospace); }
+.ngb-out-facts { display: flex; flex-direction: column; gap: 2px; margin-bottom: var(--size-4-3); }
+.ngb-out-fact { display: flex; gap: var(--size-4-2); font-size: var(--font-ui-smaller); }
+.ngb-out-fact-label { color: var(--text-muted); flex: 0 0 auto; }
+.ngb-out-fact-value { color: var(--text-normal); min-width: 0; overflow-wrap: anywhere; }
+.ngb-out-fact-warn { color: var(--text-warning); }
+/* The selected log tab: the accent says which console the field is showing.
+   (The collapsible-section rules that used to live here went with the
+   sections themselves; the tabs replaced them.) */
+.ngb-out-tab-on { color: var(--text-accent); }
+/* Divider between the log tabs and the field controls (wrap, refresh): the
+   tabs choose WHAT the console shows, everything right of the line acts on
+   how it is shown. */
+.ngb-out-tab-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 0 4px;
+  background: var(--background-modifier-border);
+  flex: 0 0 auto;
+}
+/* Wrap long lines in the console field instead of scrolling sideways. Both
+   the pre and the code carry white-space rules, so both flip. */
+.ngb-out-stream.ngb-out-wrap,
+.ngb-out-stream.ngb-out-wrap code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The cancel button keeps its space when idle: invisible but non-collapsing. */
+.ngb-sv-cancel-slot { flex: 0 0 auto; }
+.ngb-slot-inactive { visibility: hidden; pointer-events: none; }
+.ngb-copy-btn { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Toolbar icon sizing + activity animation (matches obsidian-git's spinning refresh) */
+.ngb-sv-toolbar .ngb-sv-icon { padding: var(--size-4-1); }
+.ngb-sv-toolbar .ngb-sv-icon svg { width: var(--icon-l, 20px); height: var(--icon-l, 20px); }
+/* In the bottom bar the buttons carry no vertical padding of their own: the
+   bar supplies it once, for the whole row. Two sets of padding stacked is what
+   made it a third taller than Obsidian's built-in bars. */
+.ngb-sv-footbar .ngb-sv-toolbar .ngb-sv-icon {
+  padding-top: 0; padding-bottom: 0;
+  height: auto; min-height: 0;
+}
+.ngb-sv-icon-active { color: var(--text-accent); }
+/* Activity animations. Rotation is reserved for refresh; directional bobbing
+   for pull/fetch (down) and push (up); gentle pulsing for everything else. */
+@keyframes ngb-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes ngb-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.86); }
+}
+/* pull/fetch and push use an SVG gradient sweep instead of a CSS keyframe */
+.ngb-anim-spin svg     { animation: ngb-rotate 1.2s linear infinite; transform-origin: 50% 50%; }
+.ngb-anim-pulse svg    { animation: ngb-pulse 1s ease-in-out infinite; transform-origin: 50% 50%; }
+/* Highlight band for fetch / pull / push: a quarter-height slice of the SAME
+   glyph, drawn in the accent colour, gliding along the icon. Because the lit
+   layer is the icon itself (strokes, no fill), the band only shows where there
+   is a stroke, so it reads as a highlight travelling along the glyph and never
+   as a rectangle over the button.
+
+   Two synchronised movements are needed: the window slides down while the copy
+   inside slides up by the same distance. The previous version moved only the
+   window, so the same top slice was dragged downwards instead of the band
+   scanning the glyph, and it stepped in thirds (`steps(1, end)`) instead of
+   gliding. Percentages on the inner icon resolve against the window height, so
+   -100% there equals one window height, i.e. 25% of the icon. */
+.ngb-sweep { position: relative; display: inline-flex; width: var(--icon-l, 20px); height: var(--icon-l, 20px); }
+.ngb-sweep-base { position: absolute; inset: 0; display: inline-flex; color: var(--text-muted); }
+.ngb-sweep-base > svg { width: 100%; height: 100%; }
+.ngb-sweep-lit {
+  position: absolute; left: 0; right: 0; height: 25%; overflow: hidden;
+  color: var(--interactive-accent);
+}
+.ngb-sweep-lit > svg { position: absolute; left: 0; width: 100%; height: 400%; }
+
+.ngb-sweep-down { animation: ngb-band-down 1s linear infinite; }
+.ngb-sweep-down > svg { animation: ngb-band-glyph-down 1s linear infinite; }
+.ngb-sweep-up { animation: ngb-band-up 1s linear infinite; }
+.ngb-sweep-up > svg { animation: ngb-band-glyph-up 1s linear infinite; }
+
+@keyframes ngb-band-down      { from { top: 0; }     to { top: 75%; } }
+@keyframes ngb-band-glyph-down { from { top: 0; }     to { top: -300%; } }
+@keyframes ngb-band-up        { from { top: 75%; }   to { top: 0; } }
+@keyframes ngb-band-glyph-up  { from { top: -300%; } to { top: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ngb-sweep-down, .ngb-sweep-down > svg,
+  .ngb-sweep-up, .ngb-sweep-up > svg { animation-duration: 2.4s; }
+  .ngb-anim-spin svg, .ngb-anim-pulse svg { animation-duration: 2.4s; }
+}
+/* Row currently being acted on by a per-file/folder operation (stage, unstage,
+   discard): gentle background pulse on the row itself, in addition to the
+   pulsing action button. CSS-only, like every other activity animation. */
+@keyframes ngb-row-pulse {
+  0%, 100% { background-color: transparent; }
+  50%      { background-color: var(--background-modifier-hover); }
+}
+.ngb-sv-file-busy { animation: ngb-row-pulse 1s ease-in-out infinite; border-radius: var(--radius-s); }
+@media (prefers-reduced-motion: reduce) {
+  .ngb-sv-file-busy { animation-duration: 2.4s; }
+}
+.ngb-buttons-top { justify-content: flex-start; margin: 0 0 var(--size-4-2); }
+
+/* Install command block: must wrap inside narrow settings panes */
+.ngb-cmd {
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+  margin: var(--size-4-2) 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+  max-width: 100%;
+}
+/* Same guarantee for any monospace output rendered in modals */
+/* Long stdout/stderr lines must WRAP inside result windows: `pre` alone
+   clipped them off the right edge on phones (overflow-wrap needs wrappable
+   white-space to act on). */
+.ngb-mono, .ngb-output pre { overflow-wrap: anywhere; }
+.ngb-output pre { white-space: pre-wrap; word-break: break-word; }
+
+/* Footer key/value rows: one line each, value right-aligned (no odd wrapping
+   in the narrow sidebar, where a fixed label column pushed values down). */
+.ngb-sv-kv { display: flex; flex-direction: column; gap: 2px; }
+.ngb-sv-kv-row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--size-4-2); font-size: var(--font-ui-small);
+}
+.ngb-sv-kv-key { color: var(--text-muted); flex: 0 1 auto; }
+.ngb-sv-kv-val { color: var(--text-normal); text-align: right; overflow-wrap: anywhere; }
+
+/* ---- settings: collapsible rule managers (sparse / gitignore / exclude) ---- */
+.ngb-details { border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); margin: var(--size-4-2) 0; padding: 0 var(--size-4-2); }
+.ngb-details > summary { cursor: pointer; padding: var(--size-4-2) 0; display: flex; justify-content: space-between; align-items: baseline; gap: var(--size-4-2); font-weight: var(--font-medium); }
+.ngb-details-hint { color: var(--text-muted); font-size: var(--font-ui-small); font-weight: normal; }
+.ngb-details-body { padding-bottom: var(--size-4-2); }
+.ngb-entry-row { display: flex; align-items: center; justify-content: space-between; gap: var(--size-4-2); padding: var(--size-2-2) 0; border-top: 1px solid var(--background-modifier-border); }
+.ngb-entry-text { font-family: var(--font-monospace); font-size: var(--font-smaller); overflow-wrap: anywhere; }
+.ngb-entry-row button, .ngb-add-row button { font-size: var(--font-ui-small); }
+.ngb-add-row { display: flex; gap: var(--size-4-2); margin-top: var(--size-4-2); }
+.ngb-add-row input { flex: 1 1 auto; }
+.ngb-invalid { color: var(--color-red, #e93147); font-size: var(--font-ui-small); }
+.ngb-settings-note { color: var(--text-muted); font-size: var(--font-ui-small); }
+.ngb-warning { border: 1px solid var(--color-red, #e93147); border-radius: var(--radius-s); padding: var(--size-4-2); margin: var(--size-4-2) 0; }
+
+/* ---- settings: version badges (plugin / runner / companion) ---- */
+.ngb-version-row { display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-bottom: var(--size-4-2); }
+.ngb-version-badge {
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+  background: var(--background-modifier-border); border-radius: var(--radius-s);
+  padding: 2px var(--size-4-2);
+}
+.ngb-version-stale { color: var(--color-red, #e93147); }
+
+/* Full-width textarea (was an inline style, which themes cannot override). */
+.ngb-textarea-full { width: 100%; }
+
+/* The commit window's two dropdowns (Recent messages, Templates), side by
+   side; the platform's own picker scrolls and keeps one open at a time.
+   Entries APPEND to the message. */
+.ngb-msg-pick-row { display: flex; gap: var(--size-4-2); margin-top: var(--size-4-2); }
+.ngb-msg-pick { flex: 1 1 0; min-width: 0; }
+/* The ? in the commit window's corner (mirrors the mobile action button's
+   top-left slot on the OTHER side). */
+.ngb-msg-help { position: absolute; top: var(--size-4-2); left: var(--size-4-2); }
+/* The variables modal: token + copy on one line, the meaning under it. */
+.ngb-var-row { margin-top: var(--size-4-2); }
+.ngb-var-head { display: flex; align-items: center; gap: var(--size-4-1); }
+/* The template manager's rows: the input IS the row, the trash sits beside. */
+.ngb-tpl-row { display: flex; align-items: center; gap: var(--size-4-1); margin-top: var(--size-4-2); }
+.ngb-tpl-input { flex: 1 1 0; min-width: 0; }
+
+/* ---------------------------------------------------------------- history */
+
+/* The history panel's top region ends in the strip, not in a branch line, so
+   there is nothing to hang the separator on the way the status panel hangs it
+   on `.ngb-sv-header`. It goes on the region itself, the same distance below
+   the text as in the status panel, so the two draw one line in one place.
+
+   The file-history pane is excluded because its path line already carries a
+   rule of its own; two would read as a boxed header. */
+.ngb-history-view:not(.ngb-filehist-view) .ngb-sv-head {
+  padding-bottom: var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+/* The strip's bottom margin is zero in the base rule now, for every panel, so
+   the override that used to zero it here is gone. */
+
+.ngb-history-view .ngb-hist-list { margin-top: var(--size-4-2); }
+.ngb-hist-commit { margin-bottom: var(--size-4-1); }
+.ngb-hist-header { display: flex; align-items: center; gap: var(--size-2-2); }
+.ngb-hist-titles { flex: 1 1 auto; min-width: 0; }
+.ngb-hist-subject {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: var(--font-medium);
+}
+.ngb-hist-meta { font-size: var(--font-smaller); }
+/* "moved from" hint on a rename row in the repository history, the same shape
+   as the status panel's `.ngb-sv-file-from`. `white-space: nowrap` is what
+   makes the ellipsis work at all: without it the box wraps instead of
+   overflowing, `text-overflow` never fires, and a deep path turned one row into
+   six lines. `flex: 0 1 auto` with `min-width: 0` lets it give way to the file
+   name rather than pushing it out. */
+.ngb-hist-rename {
+  font-size: var(--font-smaller); margin-left: var(--size-2-2);
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- diff pane */
+
+.ngb-diff-view {
+  padding: var(--size-4-2);
+  padding-bottom: var(--ngb-scroll-tail);
+  overflow: auto;
+}
+.ngb-diff-pane-body { margin-top: var(--size-4-2); }
+
+/* diff2html (line-by-line) rendering, adapted to Obsidian CSS variables.
+   Derived from diff2html's MIT-licensed stylesheet
+   (https://github.com/rtfpessoa/diff2html/blob/master/LICENSE.md,
+   Copyright 2014-2016 Rodrigo Fernandes) with the Obsidian-variable
+   adaptations pioneered by obsidian-version-history-diff (MIT,
+   @kometenstaub and contributors). Scoped under .ngb-diff-view.
+
+   Layout note: upstream pins line numbers with position:absolute, which broke
+   vertical scrolling here (the pane scrolls, absolutely-positioned cells were
+   anchored to workspace chrome and stayed put). Instead the numbers are real
+   table cells made position:sticky INSIDE the horizontal scroller
+   (.d2h-code-wrapper): they follow vertical scrolling with their rows and
+   stick to the left edge only while scrolling horizontally. */
+
+/* Defaults. The deleted-character highlight is a solid #AA1414: the
+   translucent red it replaced washed out against the row tint on a phone and
+   the changed characters were the hardest part of the line to find. Its text
+   goes white for the same reason — dark theme text on that red is thin, light
+   theme text on it is unreadable. All four are overridable per theme from the
+   settings ("custom colours"), which writes them inline on the pane. */
+.ngb-diff-view {
+  --ngb-diff-del-bg: rgba(255, 71, 80, 0.25);
+  --ngb-diff-del-hl: #AA1414;
+  --ngb-diff-del-hl-fg: #ffffff;
+  --ngb-diff-ins-bg: rgba(104, 211, 104, 0.25);
+  --ngb-diff-ins-hl: rgba(35, 192, 35, 0.31);
+}
+.ngb-diff-view .d2h-d-none { display: none; }
+.ngb-diff-view .d2h-wrapper { text-align: left; }
+.ngb-diff-view .d2h-file-header { display: none; }
+.ngb-diff-view .d2h-file-wrapper {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 3px; margin-bottom: 1em;
+}
+/* Horizontal-only scroller; vertical scrolling belongs to the pane. */
+.ngb-diff-view .d2h-code-wrapper { overflow-x: auto; }
+.ngb-diff-view .d2h-diff-table {
+  border-collapse: separate; border-spacing: 0;
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  min-width: 100%;
+}
+/* Compact sticky gutter: old + new number side by side (unchanged rows show
+   equal numbers on one line), and the +/- prefix relocated HERE by DiffView,
+   so it never scrolls or wraps with the text. One number per line — a wrapped
+   continuation has no gutter of its own because the whole table row wraps. */
+.ngb-diff-view .d2h-code-linenumber {
+  position: sticky; left: 0; z-index: 1;
+  /* The measured width applies in BOTH layouts, not only the wrapped one. The
+     `@@` row indents itself by this same variable to line up with the code, and
+     that only holds if the variable is what the column actually is — left to
+     the table, the column took whatever the widest row wanted and the header
+     sat a few characters off. */
+  width: var(--ngb-diff-gutter-w, 6em);
+  box-sizing: border-box; white-space: nowrap;
+  padding: 0 0.25em;
+  color: var(--text-faint); text-align: right;
+  user-select: none; vertical-align: top;
+  /* Must be opaque: translucent numbers would let scrolled code bleed through. */
+  background-color: var(--background-primary);
+  border-right: 1px solid var(--background-modifier-border);
+}
+/* Old number, new number, then the prefix — three columns that must stay
+   apart at any digit count. `min-width: 1.6em` alone was room for exactly two
+   digits: at three the two numbers touched and `832` next to `887` rendered as
+   `832887`, which is unreadable and looks like one six-digit number. The
+   min-width is now a floor for short files only, and the separator does the
+   work at every length. */
+.ngb-diff-view .line-num1, .ngb-diff-view .line-num2 {
+  display: inline-block; box-sizing: content-box; overflow: hidden;
+  /* BOTH boxes carry the same fixed width (set by sizeGutter from the digit
+     count): a deleted row holds one number and one EMPTY box, and with
+     content-sized boxes its number drifted out of the column the paired rows
+     drew. The min-width stays as the floor for short files. */
+  width: var(--ngb-num-w, 1.6em);
+  min-width: 1.6em; text-align: right;
+  /* Top, not baseline: an EMPTY inline-block's baseline is its bottom edge,
+     which is what shoved the +/- prefix downward on rows with a gap. */
+  vertical-align: top;
+}
+.ngb-diff-view .line-num1 { padding-right: 0.6em; }
+.ngb-diff-view .line-num2 { padding-right: 0.35em; }
+.ngb-diff-view .d2h-code-linenumber .d2h-code-line-prefix {
+  display: inline-block; width: 1em; text-align: center; color: var(--text-muted);
+  vertical-align: top;
+}
+/* The line container collapses whitespace (nowrap) and only the content span
+   preserves the file's real spaces (pre, inline-block).
+   This began as a defence against diff2html's pretty-printed template HTML,
+   which put newlines and indentation BETWEEN the spans: `pre` on the container
+   rendered that as a phantom indent and broke the +/- prefix onto its own line.
+   The renderer now builds nodes directly and inserts no whitespace of its own,
+   so the split of responsibility is no longer forced — but it is still the
+   correct one, and only the content span should ever preserve spacing. */
+/* One hunk's controls, inside its @@ header row so they scroll with the hunk
+   and can never cover a line of the diff. Interface font, not monospace: these
+   are buttons, not code.
+
+   Everything is packed to the START of the row. Pushing the mode toggle to the
+   far end with `margin-left: auto` only worked in the wrapped layout: without
+   wrapping the table is as wide as the longest line of code, so "the far end"
+   sat somewhere off the right of the horizontal scroller and the toggle could
+   not be reached at all. */
+.ngb-hunk-bar {
+  display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: flex-start;
+  gap: var(--size-4-1);
+  padding: var(--size-4-1) 0.5em var(--size-4-2);
+  font-family: var(--font-interface);
+  /* Pinned to the left edge of the horizontal scroller, like the number gutter
+     beside it and the conflict pane's Keep row. Without this the controls live
+     on the `@@` row, which is as wide as the widest line of code: scroll right
+     to read a long line and Stage/Unstage/Select lines are somewhere behind
+     you. Packing them to the start was the first half of that fix (a
+     `margin-left: auto` here put them off the end of the scroller entirely);
+     staying put while the code moves is the other half.
+     `width: max-content` is what gives sticky room to move — an element as wide
+     as its containing block has nowhere to shift to. */
+  position: sticky; left: 0; z-index: 2;
+  width: max-content; max-width: 100%;
+  /* Opaque, or the code scrolling past shows through the buttons. The `@@` row
+     is `--background-primary` (`.d2h-info`), so this matches rather than adds a
+     second colour. */
+  background-color: var(--background-primary);
+}
+/* The `@@` row is one cell spanning both columns (see renderHunkHeader), so it
+   starts at the pane's left edge and the bar above sticks at zero from the
+   start rather than sliding into place.
+
+   The `@@` line itself is content: it scrolls with the code, as it should. So
+   it is indented past the gutter to sit in the same column the code sits in.
+   Without that it began under the numbers and slid out from beneath the sticky
+   bar, which looked like a rendering fault rather than like a scroll. The
+   padding is on the LINE, never on the cell — the cell is what the bar sticks
+   inside, and padding there would carry the bar right along with it.
+
+   `--ngb-diff-gutter-w` is measured from the real line numbers by `sizeGutter`
+   on every render, in both layouts, so this tracks a three-digit file as
+   readily as a two-digit one. */
+.ngb-diff-view .ngb-hunk-start .d2h-info > .d2h-code-line {
+  padding-left: calc(var(--ngb-diff-gutter-w, 6em) + 0.5em);
+}
+/* Explicit button chrome. These sit on the @@ row's own background, which is
+   the pane background, so a button styled only by its padding read as a label
+   with nothing to tap. */
+.ngb-hunk-btn {
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-4-1) var(--size-4-2);
+  height: auto; min-height: 0;
+  display: inline-flex; align-items: center; gap: var(--size-2-2);
+  background-color: var(--interactive-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  box-shadow: var(--shadow-s);
+  color: var(--text-normal);
+}
+.ngb-hunk-btn:hover { background-color: var(--interactive-hover); }
+.ngb-hunk-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+.ngb-hunk-btn-icon { display: inline-flex; align-items: center; }
+.ngb-hunk-btn-icon svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+.ngb-hunk-pick-toggle span { font-size: var(--font-ui-smaller); }
+/* Which lines of the file this hunk is. A label, not a control: no chrome, and
+   it never competes with the buttons beside it for a tap. */
+.ngb-hunk-range {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  user-select: none;
+}
+/* A rule between hunks, with half the air on each side of it.
+   Without any separation the last line of one hunk and the @@ row of the next
+   sit flush together and the diff reads as one continuous stretch of file. The
+   air alone was not enough on a phone, so the boundary is drawn.
+   The border goes on BOTH cells of the header row, gutter included, so the line
+   crosses the whole table instead of stopping where the numbers end.
+   On the FIRST hunk it would be a rule under the pane header and nothing else,
+   hence the sibling combinator. */
+.ngb-diff-view tr.ngb-hunk-end > td { padding-bottom: 0.7em; }
+.ngb-diff-view tr + tr.ngb-hunk-start > td {
+  padding-top: 0.7em;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Line checkboxes, first in the sticky gutter: the left edge is the only part
+   of a wide diff reachable on a phone without scrolling sideways. Sized against
+   the line height so a row does not grow taller in picking mode.
+
+   `float: left` is what puts them in a COLUMN. The gutter is right-aligned, so
+   in normal flow the checkbox is pushed rightwards by whatever the numbers
+   beside it happen to need: an insertion (one number) and a context line (two)
+   put their checkboxes at different distances from the left edge, and a column
+   of ticks zig-zagged. Floating takes the checkbox out of that flow and pins it
+   to the cell's left edge, the same place on every row, which is also the
+   easiest place to hit with a thumb. */
+.ngb-diff-view .ngb-line-pick {
+  /* Inside the empty half of the number column, centred in it. It used to
+     float before both numbers, which widened the gutter by its own width and
+     shifted every number and every +/- sideways the moment picking was turned
+     on. A line that can be picked always has one number missing — an addition
+     has no old number, a deletion no new one — so the box goes in that gap and
+     nothing moves. */
+  display: block; margin: 0 auto;
+  width: 1em; height: 1em;
+  vertical-align: middle;
+}
+
+.ngb-diff-view .d2h-code-line { padding: 0 0.5em; white-space: nowrap; }
+.ngb-diff-view .d2h-code-line-ctn {
+  white-space: pre; display: inline-block; vertical-align: middle;
+}
+.ngb-diff-view .d2h-code-line-prefix { user-select: none; white-space: pre; }
+.ngb-diff-view .d2h-code-line del {
+  background-color: var(--ngb-diff-del-hl); color: var(--ngb-diff-del-hl-fg);
+}
+.ngb-diff-view .d2h-code-line del,
+.ngb-diff-view .d2h-code-line ins {
+  border-radius: 0.2em; display: inline-block; margin-top: -1px;
+  text-decoration: none; vertical-align: middle;
+}
+.ngb-diff-view .d2h-code-line ins {
+  background-color: var(--ngb-diff-ins-hl); text-align: left;
+}
+/* Row tints: translucent over the pane for code cells… */
+.ngb-diff-view .d2h-del { background-color: var(--ngb-diff-del-bg); }
+.ngb-diff-view .d2h-ins { background-color: var(--ngb-diff-ins-bg); }
+.ngb-diff-view .d2h-info { background-color: var(--background-primary); color: var(--text-faint); }
+/* …but layered over an opaque base for the sticky number cells. */
+.ngb-diff-view .d2h-code-linenumber.d2h-del {
+  background-color: var(--background-primary);
+  background-image: linear-gradient(var(--ngb-diff-del-bg), var(--ngb-diff-del-bg));
+}
+.ngb-diff-view .d2h-code-linenumber.d2h-ins {
+  background-color: var(--background-primary);
+  background-image: linear-gradient(var(--ngb-diff-ins-bg), var(--ngb-diff-ins-bg));
+}
+.ngb-diff-view .d2h-emptyplaceholder {
+  background-color: var(--background-primary);
+  border-color: var(--background-modifier-border);
+}
+
+/* Optional line wrapping (settings toggle). `table-layout: fixed` is the
+   load-bearing part: with the default auto layout the table sizes itself to
+   its longest line, so wrapped text still pushed the pane into horizontal
+   scrolling. Fixed layout makes every cell follow the pane's real width, and
+   the gutter needs an explicit width for the remainder to be distributed. */
+.ngb-diff-view.ngb-diff-wrap .d2h-code-wrapper { overflow-x: hidden; }
+.ngb-diff-view.ngb-diff-wrap .d2h-diff-table {
+  table-layout: fixed; width: 100%; min-width: 0;
+}
+/* Width measured from the real line numbers by DiffView (--ngb-diff-gutter-w).
+   A fixed guess was too small for three-digit numbers: the gutter's content
+   overflowed the cell and the relocated +/- prefix ended up drawn past the
+   border, looking like part of the code. `overflow: hidden` is the backstop —
+   nothing may ever spill out of this column again. */
+.ngb-diff-view.ngb-diff-wrap .d2h-code-linenumber {
+  width: var(--ngb-diff-gutter-w, 6em);
+  overflow: hidden;
+}
+/* The width fixed layout ACTUALLY reads: the <col>, not a later row's td.
+   The first row is the @@ header (one colspan=2 cell), so without the col
+   the browser split the columns 50/50 and the gutter took half the pane. */
+.ngb-diff-view.ngb-diff-wrap col.ngb-col-gutter {
+  width: var(--ngb-diff-gutter-w, 6em);
+}
+.ngb-diff-view.ngb-diff-wrap .d2h-code-line { white-space: normal; }
+.ngb-diff-view.ngb-diff-wrap .d2h-code-line-ctn {
+  display: block; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%;
+}
+
+/* Whole-file preview (File at commit). The diff pane's table and classes, with
+   one number column instead of two, always wrapped, and scrolling inside the
+   modal rather than growing it. No bottom tail: a modal has no gesture bar or
+   floating toolbar over its lower edge. */
+.ngb-preview-view {
+  padding: 0; padding-bottom: 0;
+  max-height: 60vh; overflow-y: auto; overflow-x: hidden;
+  margin-top: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border); border-radius: 3px;
+}
+.ngb-preview-view .line-num2, .ngb-preview-view .d2h-code-line-prefix { display: none; }
+.ngb-preview-view .d2h-cntx { background-color: transparent; }
+
+/* Invisible characters (settings toggle): the glyphs are inserted by a DOM
+   pass over the rendered diff (spaces -> ·, tabs -> →, CR -> ␍), wrapped in
+   this class so they stay visually secondary. */
+.ngb-diff-view .ngb-ws-glyph { color: var(--text-faint); opacity: 0.7; }
+
+/* ------------------------------------------------- conflict resolution */
+
+/* Warning glyph on conflicted rows in the status panel. */
+.ngb-conf-row-icon { display: inline-flex; align-items: center; color: var(--text-error); flex: 0 0 auto; }
+.ngb-conf-row-icon svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+
+/* Per-block resolution pane. Exactly one number per physical file line; chrome
+   rows (side label + button) are visually distinct from file content and, when
+   un-numbered, carry a pointer glyph in the gutter so they can never be
+   misread as wrapped continuations.
+
+   Wrapping follows the same "Wrap long lines" preference the diff pane reads.
+   It used to be forced on here, because the Keep buttons sit on rows inside the
+   file text and a horizontal scroller carries them off the right of the screen
+   — the same failure `margin-left: auto` produced in the diff table. The
+   no-wrap block near the end of this section is what made the preference safe:
+   the gutter and the chrome rows are `position: sticky` INSIDE the scroller, so
+   only the file text moves. */
+/* The pane itself never scrolls sideways whatever the preference says; the
+   scroller is `.ngb-conf-list`, one level in, exactly as `.d2h-code-wrapper` is
+   for the diff pane. */
+.ngb-conflict-view {
+  padding: var(--size-4-2);
+  padding-bottom: var(--ngb-scroll-tail);
+  overflow-y: auto; overflow-x: hidden;
+}
+.ngb-conf-list, .ngb-conf-row { max-width: 100%; }
+/* "The runner is working", beside the button that started it. Same shape as the
+   panes' wait indicator; it lives here because staging a resolved file is a
+   Termux round trip and this pane had nothing to show for those seconds. */
+.ngb-conf-waiting {
+  display: inline-flex; align-items: center; gap: var(--size-4-1);
+  margin-left: var(--size-4-2);
+}
+.ngb-conflict-view {
+  --ngb-conf-ours-bg: rgba(8, 185, 78, 0.12);
+  --ngb-conf-theirs-bg: rgba(8, 109, 221, 0.12);
+  /* The diff pane's intra-line highlights, repeated here so the conflict pane
+     has them without depending on a diff pane being open. Overridden inline by
+     the custom-colour setting, which writes the same two names. */
+  --ngb-diff-del-hl: #AA1414;
+  --ngb-diff-del-hl-fg: #ffffff;
+  --ngb-diff-ins-hl: rgba(35, 192, 35, 0.31);
+}
+.ngb-conf-list {
+  font-family: var(--font-monospace); font-size: var(--font-smaller);
+  border: 1px solid var(--background-modifier-border); border-radius: 3px;
+  margin-top: var(--size-4-2);
+}
+.ngb-conf-row { display: flex; align-items: flex-start; }
+/* One line height of air above every conflict block after the first, the same
+   separation the diff pane gives a hunk and for the same reason: without it the
+   ordinary file lines before a block and the block itself run together. */
+.ngb-conf-row + .ngb-conf-block-start { margin-top: 1.4em; }
+.ngb-conf-num {
+  flex: 0 0 3em; text-align: right; padding-right: 0.5em;
+  color: var(--text-faint); user-select: none;
+  border-right: 1px solid var(--background-modifier-border);
+}
+.ngb-conf-text { flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; padding-left: 0.5em; min-width: 0; }
+/* What differs between the local and the remote line, highlighted the same way
+   the diff pane highlights it. The default `<del>`/`<ins>` rendering is a
+   strikethrough and an underline, which say "something here" without saying
+   what, and on a wrapped Cyrillic paragraph a thin underline is easy to miss
+   entirely. The colours are the diff pane's own, so one file reads the same
+   way in both panes. */
+.ngb-conflict-view .ngb-conf-text del {
+  background-color: var(--ngb-diff-del-hl);
+  color: var(--ngb-diff-del-hl-fg);
+}
+.ngb-conflict-view .ngb-conf-text ins {
+  background-color: var(--ngb-diff-ins-hl);
+}
+.ngb-conflict-view .ngb-conf-text del,
+.ngb-conflict-view .ngb-conf-text ins {
+  border-radius: 0.2em;
+  text-decoration: none;
+}
+.ngb-conf-ours { background: var(--ngb-conf-ours-bg); }
+.ngb-conf-theirs { background: var(--ngb-conf-theirs-bg); }
+.ngb-conf-base .ngb-conf-text { color: var(--text-faint); }
+.ngb-conf-divider .ngb-conf-text { color: var(--text-faint); user-select: none; }
+/* Raw marker lines (visible-markers mode) read as DIMMED file content. */
+.ngb-conf-raw .ngb-conf-text { color: var(--text-faint); font-style: italic; }
+
+/* Chrome rows are NOT file text: own background, side border, interface font
+   chip, and the button pinned to the right edge on a single non-wrapping
+   line — the label truncates, the button never covers anything. */
+.ngb-conf-marker {
+  align-items: center;
+  background: var(--background-secondary);
+  border-top: 1px solid var(--background-modifier-border);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.ngb-conf-marker .ngb-conf-num {
+  align-self: stretch; display: flex; align-items: center; justify-content: flex-end;
+}
+.ngb-conf-num-chrome { color: var(--text-accent); }
+.ngb-conf-marker-body {
+  flex: 1 1 auto; display: flex; align-items: center; flex-wrap: nowrap;
+  gap: var(--size-4-2); padding: 2px var(--size-4-2) 2px 0.5em; min-width: 0;
+}
+.ngb-conf-side-chip {
+  font-family: var(--font-interface); font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold); letter-spacing: 0.03em;
+  padding: 0 var(--size-2-3); border-radius: var(--radius-s);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+/* The side is carried by the coloured edge of the chrome row, not by a tint
+   behind the label. Two tinted labels on a row that already has its own
+   background, above a block that already has that side's tint, was the third
+   place the same fact was being stated, and the one that made the label itself
+   hardest to read. */
+.ngb-conf-ours-head { border-left: 3px solid var(--color-green, #08b94e); }
+.ngb-conf-theirs-head { border-left: 3px solid var(--color-blue, #086ddd); }
+.ngb-conf-keep {
+  flex: 0 1 auto; margin-left: auto;
+  font-size: var(--font-ui-smaller); padding: 0 var(--size-4-2);
+  max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---- conflict pane, wrapping OFF -------------------------------------------
+
+   Structure, mirroring the diff pane because that construction is the one that
+   works on the device:
+
+     .ngb-conf-list   the horizontal scroller        (= .d2h-code-wrapper)
+       .ngb-conf-rows   max-content wide, so every row is as wide as the
+                        longest line and no row background stops mid-screen
+         .ngb-conf-row
+           .ngb-conf-num          sticky at the left edge   (= .d2h-code-linenumber)
+           .ngb-conf-text         the part that actually scrolls
+           .ngb-conf-marker-body  sticky beside the gutter: the side label and
+                                  the Keep button never leave the screen
+
+   Both sticky elements are NARROW inside a row that is wide, which is the
+   condition sticky needs and the one an earlier attempt here got wrong: an
+   element as wide as its containing block has nowhere to shift to. */
+.ngb-conf-nowrap .ngb-conf-list { overflow-x: auto; }
+.ngb-conf-nowrap .ngb-conf-rows {
+  display: flex; flex-direction: column;
+  width: max-content; min-width: 100%;
+}
+.ngb-conf-nowrap .ngb-conf-text {
+  flex: 0 0 auto; white-space: pre; word-break: normal;
+}
+/* Opaque base under the sticky gutter, then the row's own tint on top: without
+   the base the file text scrolls THROUGH the numbers, which is what the diff
+   pane's number cells do for the same reason. */
+.ngb-conf-nowrap .ngb-conf-num {
+  position: sticky; left: 0; z-index: 2;
+  background: var(--background-primary);
+}
+.ngb-conf-nowrap .ngb-conf-ours .ngb-conf-num {
+  background: linear-gradient(var(--ngb-conf-ours-bg), var(--ngb-conf-ours-bg)),
+              var(--background-primary);
+}
+.ngb-conf-nowrap .ngb-conf-theirs .ngb-conf-num {
+  background: linear-gradient(var(--ngb-conf-theirs-bg), var(--ngb-conf-theirs-bg)),
+              var(--background-primary);
+}
+.ngb-conf-nowrap .ngb-conf-marker .ngb-conf-num {
+  background: var(--background-secondary);
+}
+/* Sized to its contents and pinned just past the gutter. `margin-left: auto` on
+   the button is dropped here on purpose: with a scroller in play "the far end
+   of the row" is off-screen, which is exactly how two controls in the diff
+   table became unreachable. Controls pack to the start. */
+.ngb-conf-nowrap .ngb-conf-marker-body {
+  /* Exactly the gutter's width plus its border. `3em` alone left the chrome
+     drifting by that one pixel before it caught — small, and visible, because
+     the eye tracks a control that ought to be nailed down. */
+  position: sticky; left: calc(3em + 1px); z-index: 2;
+  flex: 0 0 auto; width: max-content;
+  background: var(--background-secondary);
+}
+.ngb-conf-nowrap .ngb-conf-keep { margin-left: 0; max-width: none; }
+
+/* The Git context menu's first item: what the menu is about. A non-interactive
+   label, so it takes the menu's own item padding; the directory sits above the
+   name in smaller, muted type.
+
+   `white-space: normal` is what makes it wrap at all. A menu item title is
+   `nowrap` in Obsidian's own stylesheet and that property INHERITS, so
+   `overflow-wrap` alone did nothing and a deep path was simply clipped at the
+   right edge — which answers exactly as little as showing no path would. Both
+   lines may run to as many rows as they need: this is the only place the file
+   is named, and the entries below it are destructive. */
+.ngb-menu-head {
+  display: flex; flex-direction: column; line-height: 1.25;
+  white-space: normal; overflow-wrap: anywhere; min-width: 0;
+}
+.ngb-menu-head-dir {
+  font-size: var(--font-ui-smaller); color: var(--text-faint);
+  white-space: normal; overflow-wrap: anywhere;
+}
+.ngb-menu-head-name {
+  font-size: var(--font-ui-smaller); font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  white-space: normal; overflow-wrap: anywhere;
+}
+/* The item that holds it must be allowed to grow with it: Obsidian sizes a
+   menu item for one line and clips the overflow. Scoped to this item through
+   the label's own class, so no other menu item anywhere changes shape. */
+.menu-item-title:has(.ngb-menu-head) { white-space: normal; overflow: visible; }
+
+/* Severity, in the two places the plugin states it as text: the message lines
+   of a result window that reports a failure, and the rows of the operation log.
+   Both classes were emitted with no rule, so an `[error]` line in a log whose
+   whole purpose is finding failures read exactly like the `[info]` lines around
+   it. Colour only — the text already says which level it is, and a background
+   here would fight the theme's own log styling. */
+.ngb-status-error { color: var(--text-error); }
+.ngb-status-waiting { color: var(--text-warning, #e0ac00); }
+
+/* The change marker in front of a path in a modal's file list. It was emitted
+   with no rule at all, so `M`, `D` and `!` sat flush against the path and read
+   as its first character. A fixed-width monospace chip separates the two facts:
+   what changed, and what it was. */
+.ngb-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto; min-width: 1.6em; margin-right: var(--size-4-2);
+  padding: 0 var(--size-2-2);
+  font-family: var(--font-monospace); font-size: var(--font-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  background: var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
+.ngb-badge-conflict { color: var(--text-error); background: transparent; }
+.ngb-badge-conflict svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+/* The path itself: whatever is left, and it may wrap — a modal has the height
+   for it and truncating a path in a list whose whole job is naming files
+   answers nothing. */
+.ngb-badge-path { overflow-wrap: anywhere; }
+.ngb-file-list li { display: flex; align-items: flex-start; }
+
+/* Recovery buttons in the sparse-safety window. Both must fit on ONE row on a
+   phone: equal share of the width, small type, labels truncated instead of
+   wrapped (the full text is in the aria-label and in the note below them). */
+.ngb-fix-row {
+  display: flex; gap: var(--size-4-2); margin: var(--size-4-2) 0;
+}
+.ngb-fix-btn {
+  flex: 1 1 0; min-width: 0;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-3) var(--size-4-1);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---------------------------------------- platform-aware modal action button */
+
+/* The single agree button of confirm/commit modals (no Cancel anywhere: the
+   modal X is the cancel). Mobile: top-left, mirroring the panel toolbar;
+   desktop: centered under the content. */
+.ngb-modal-action { display: inline-flex; align-items: center; gap: var(--size-2-2); }
+.ngb-modal-action-icon { display: inline-flex; align-items: center; }
+.ngb-modal-action-icon svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+/* Centred, with air above: `justify-content` alone did nothing — .ngb-buttons
+   carries no rule, so the wrap was a plain block and the inline-flex button
+   sat at its left edge (device screenshot: Commit glued left under the
+   textarea). */
+.ngb-modal-action-bottom {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--size-4-3);
+}
+/* A modal with a text input on a phone: the on-screen keyboard takes the
+   bottom half of the screen, so the WINDOW is anchored by its BOTTOM edge
+   just above the vertical middle - it occupies the lower part of the top
+   half, growing upward when the content needs room, and the action button at
+   its bottom stays above the keyboard. Anchoring the top instead glued the
+   window to the status bar with dead space under it (device screenshot).
+   Fixed positioning on purpose - it holds whatever layout the app gives
+   modals on that platform. The content scrolls inside if it must; the button
+   never moves. (This replaced a top-left corner button, which put the one
+   button of these modals in a different place than every other modal's.) */
+.is-phone .modal.ngb-modal-keyboard-safe {
+  position: fixed;
+  top: auto;
+  bottom: calc(50vh + var(--size-4-2));
+  left: var(--size-4-3);
+  right: var(--size-4-3);
+  width: auto;
+  margin: 0;
+  max-height: 44vh;
+  display: flex;
+  flex-direction: column;
+}
+.is-phone .modal.ngb-modal-keyboard-safe .modal-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* ------------------------------------------------ file history view */
+
+/* The path identifies the whole view, so it stays on one line and truncates. */
+/* The identity line of a file pane: which file, and which two sides are being
+   compared. One rule for all three panes (diff, file history, conflict) — they
+   answer questions about the same thing and used to head themselves in three
+   different ways. Always ONE line: wrapping it would push the content down. */
+.ngb-pane-path, .ngb-filehist-path {
+  font-size: var(--font-smaller); color: var(--text-muted);
+  font-family: var(--font-monospace);
+  padding-bottom: var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ngb-filehist-change {
+  font-size: var(--font-smaller); color: var(--text-accent);
+  font-family: var(--font-monospace);
+}
+.ngb-filehist-waiting { display: flex; align-items: center; gap: var(--size-4-2); padding: var(--size-4-2); }
+.ngb-filehist-waiting svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+
+/* Whole-file restore: the label may be clipped on a narrow screen, the icon
+   never is (separate element, fixed size, outside the truncating span). */
+.ngb-filehist-restore {
+  flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center;
+  gap: var(--size-2-2); font-size: var(--font-ui-smaller);
+  padding: var(--size-2-2) var(--size-4-2);
+}
+.ngb-filehist-restore-icon { flex: 0 0 auto; display: inline-flex; }
+.ngb-filehist-restore-icon svg { width: var(--icon-s, 16px); height: var(--icon-s, 16px); }
+.ngb-filehist-restore-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ngb-filehist-body:empty { display: none; }
+.ngb-filehist-diff { padding: 0; }
+
+/* Per-block restore now sits in the hunk's own `@@` row, styled as
+   `.ngb-hunk-btn` like every other hunk control, so this panel and the diff
+   pane put the same kind of thing in the same place. What used to be here — a
+   table row of its own above the header, right aligned, with its own
+   background — is gone: the alignment pushed the button off the horizontal
+   scroller on a diff wider than the pane, and the shape differed from the diff
+   pane's for no reason anyone could name. */

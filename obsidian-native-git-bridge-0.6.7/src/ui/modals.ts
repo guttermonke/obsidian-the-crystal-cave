@@ -1,0 +1,507 @@
+import { App, Modal, Platform, setIcon } from "obsidian";
+import { addCopyButton } from "./copyable";
+import { DISPLAY_OUTPUT_LIMIT } from "../constants";
+import type { GitStatusSummary, SparseSafetyReport, SparseStateSummary } from "../types";
+import { planSparseRepair, type SparseRepairPlan } from "../git/sparseSafety";
+
+/**
+ * The ONE action button of an agree/decline modal. There is no Cancel button
+ * anywhere: the modal's close (X) IS the cancel. Placement is platform-aware —
+ * mobile puts the button (icon + label) in the TOP-LEFT corner, mirroring the
+ * panel toolbar; desktop centers it under the content.
+ */
+export function placeModalAction(
+  modal: Modal,
+  opts: {
+    label: string;
+    icon: string;
+    danger?: boolean;
+    /**
+     * The modal has a text field, so the on-screen keyboard will be open.
+     * The action stays at the bottom of the WINDOW everywhere — one place to
+     * look for it on every platform — and on mobile the window itself is
+     * pinned to the top half of the screen (`ngb-modal-keyboard-safe`), so
+     * the button sits above the keyboard instead of under it. The earlier
+     * answer moved the button to the top-left corner, which put the one
+     * button of these modals in a different place than every other modal's.
+     */
+    hasInput?: boolean;
+    onClick: () => void;
+  }
+): HTMLButtonElement {
+  // `createEl` on the modal's own element rather than `document.createElement`:
+  // it uses the right document (a modal opened from a popout window belongs to
+  // that window) and it is what Obsidian's guidelines ask for. The button is
+  // detached again below and re-inserted where the platform wants it.
+  const b = modal.modalEl.createEl("button", {
+    cls: `ngb-modal-action ${opts.danger ? "mod-warning" : "mod-cta"}`,
+  });
+  const ic = b.createSpan({ cls: "ngb-modal-action-icon" });
+  setIcon(ic, opts.icon);
+  b.createSpan({ text: opts.label });
+  b.setAttribute("aria-label", opts.label);
+  b.addEventListener("click", opts.onClick);
+  if (Platform.isMobile && opts.hasInput === true) {
+    modal.modalEl.addClass("ngb-modal-keyboard-safe");
+  }
+  const wrap = modal.contentEl.createDiv({ cls: "ngb-buttons ngb-modal-action-bottom" });
+  wrap.appendChild(b);
+  return b;
+}
+
+function outputSection(el: HTMLElement, label: string, text: string | undefined): void {
+  if (!text || text.trim() === "") return;
+  const details = el.createEl("details", { cls: "ngb-details" });
+  details.createEl("summary", { text: label });
+  const box = details.createDiv({ cls: "ngb-output" });
+  const shown =
+    text.length > DISPLAY_OUTPUT_LIMIT
+      ? text.slice(0, DISPLAY_OUTPUT_LIMIT) + "\n… (truncated; full output in runner.log)"
+      : text;
+  box.createEl("pre", { text: shown });
+}
+
+/** Generic result modal: summary + collapsible stdout/stderr, never a bare "failed". */
+/**
+ * Render a text line into `parent`, turning every http(s) URL into a real
+ * clickable <a> (Obsidian routes it to the system browser). Plain setText
+ * would leave URLs as dead, uncopyable text on mobile.
+ */
+/**
+ * The change marker in front of a path in a modal's file list.
+ *
+ * `null` is a conflict and draws the warning glyph, the same one the status
+ * panel puts on a conflicted row: the two surfaces answer the same question and
+ * a reader should not have to learn two alphabets. Everything else is git's own
+ * letter, in a chip wide enough that it cannot be read as the first character
+ * of the path behind it.
+ */
+export function renderFileBadge(parent: HTMLElement, badge: string | null): HTMLElement {
+  if (badge === null) {
+    const warn = parent.createSpan({ cls: "ngb-badge ngb-badge-conflict" });
+    setIcon(warn, "alert-triangle");
+    warn.setAttribute("aria-label", "Merge conflict");
+    return warn;
+  }
+  return parent.createSpan({ cls: "ngb-badge", text: badge });
+}
+
+export function linkifyInto(parent: HTMLElement, text: string): void {
+  const re = /https?:\/\/[^\s)"']+/g;
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    const i = m.index ?? 0;
+    if (i > last) parent.appendText(text.slice(last, i));
+    parent.createEl("a", { href: m[0], text: m[0] });
+    last = i + m[0].length;
+  }
+  if (last < text.length) parent.appendText(text.slice(last));
+}
+
+export interface ResultModalAction {
+  label: string;
+  onClick: () => void;
+  cta?: boolean;
+  /** Keep the modal open after the click (default: close). */
+  keepOpen?: boolean;
+}
+
+export class ResultModal extends Modal {
+  constructor(
+    app: App,
+    private title: string,
+    private lines: string[],
+    private opts: {
+      stdout?: string;
+      stderr?: string;
+      isError?: boolean;
+      /**
+       * A long payload the reader needs available but not in the way — a
+       * pasteable command, a file list. Rendered as a collapsed section like
+       * stdout/stderr, and included in Copy details. Born from a device
+       * screenshot: a clone command printed inline as a body line filled the
+       * whole screen with wrapped path noise.
+       */
+      collapsed?: { label: string; text: string };
+      /** One-tap fix buttons rendered ABOVE Copy/Close. */
+      actions?: ResultModalAction[];
+      /**
+       * Called when the window closes, however it closes. A caller awaiting a
+       * decision resolves its "declined" branch here; the ✕ is the decline, per
+       * the dialog convention, so it must not leave a promise hanging.
+       */
+      onDismiss?: () => void;
+    } = {}
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("ngb-modal");
+    this.titleEl.setText(this.title);
+    const c = this.contentEl;
+    const sec = c.createDiv({ cls: "ngb-section" });
+    for (const line of this.lines) {
+      const div = sec.createDiv({ cls: this.opts.isError ? "ngb-status-error" : "" });
+      linkifyInto(div, line);
+    }
+    if (this.opts.collapsed) outputSection(c, this.opts.collapsed.label, this.opts.collapsed.text);
+    if (this.opts.actions && this.opts.actions.length > 0) {
+      const fixes = c.createDiv({ cls: "ngb-buttons ngb-action-buttons" });
+      for (const a of this.opts.actions) {
+        const b = fixes.createEl("button", { text: a.label, cls: a.cta ? "mod-cta" : "" });
+        b.addEventListener("click", () => {
+          a.onClick();
+          if (!a.keepOpen) this.close();
+        });
+      }
+    }
+    outputSection(c, "stdout", this.opts.stdout);
+    outputSection(c, "stderr", this.opts.stderr);
+    // No Close button: the window's own ✕ closes it, and a second control
+    // doing the same thing next to the real actions only competed with them.
+    const btns = c.createDiv({ cls: "ngb-buttons" });
+    addCopyButton(btns, () => this.fullText(), "Copy details", "Details copied.");
+  }
+
+  private fullText(): string {
+    const parts = [this.title, ...this.lines];
+    if (this.opts.collapsed) parts.push("", `--- ${this.opts.collapsed.label} ---`, this.opts.collapsed.text);
+    if (this.opts.stdout) parts.push("", "--- stdout ---", this.opts.stdout);
+    if (this.opts.stderr) parts.push("", "--- stderr ---", this.opts.stderr);
+    return parts.join("\n");
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    // However the window closed: a caller awaiting a decision resolves its
+    // declined branch here, because the ✕ is the decline (dialog convention).
+    this.opts.onDismiss?.();
+  }
+}
+
+/**
+ * Explicit confirmation modal with labeled buttons (never ambiguous icon-only
+ * actions). Used before every destructive operation.
+ */
+export class ConfirmModal extends Modal {
+  private decided = false;
+
+  constructor(
+    app: App,
+    private opts: {
+      title: string;
+      body: string[];
+      confirmLabel: string;
+      /** Icon for the single action button (default: check). */
+      icon?: string;
+      danger?: boolean;
+    },
+    /**
+     * The type admits `Promise<void>`. Almost every decision this modal reports
+     * leads to a Termux round trip, so nearly all callers pass an `async`
+     * function, and a callback typed `() => void` receiving one is what
+     * "Promise returned where a void return was expected" reports. Widening the
+     * contract here covers about thirty call sites. Adding `void` at each of
+     * them would silence the warning and leave the mismatch in place.
+     *
+     * The modal itself does not await the result: it has already closed, and
+     * there is nothing it could do with a rejection. Callers own their errors,
+     * which is what `runOperation` and `renderMutationError` are for.
+     */
+    private onDecision: (confirmed: boolean) => void | Promise<void>
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("ngb-modal");
+    this.titleEl.setText(this.opts.title);
+    const c = this.contentEl;
+    for (const line of this.opts.body) linkifyInto(c.createEl("p"), line);
+    // No Cancel button: closing the modal (X / backdrop / Esc) declines.
+    placeModalAction(this, {
+      label: this.opts.confirmLabel,
+      icon: this.opts.icon ?? "check",
+      danger: this.opts.danger,
+      onClick: () => {
+        this.decided = true;
+        this.close();
+        // `void` here, and not at the ~30 call sites, is the point of typing
+        // `onDecision` as possibly async: the decision NOT to wait belongs to
+        // the modal. It has already closed and has nothing to do with a
+        // rejection; the caller owns its own errors.
+        void this.onDecision(true);
+      },
+    });
+  }
+
+  onClose(): void {
+    if (!this.decided) void this.onDecision(false);
+    this.contentEl.empty();
+  }
+}
+
+/** Changed-files modal fed by the last native `git status` result. */
+export class ChangedFilesModal extends Modal {
+  constructor(
+    app: App,
+    private status: GitStatusSummary,
+    private fetchedAt: string
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("ngb-modal");
+    this.titleEl.setText("Native Git: changed files");
+    const c = this.contentEl;
+    c.createDiv({
+      cls: "ngb-settings-note",
+      text: `Branch ${this.status.branch ?? "(detached)"} · ↑${this.status.ahead} ↓${this.status.behind} · as of ${this.fetchedAt}`,
+    });
+    // `badge: null` means "conflicted", which is drawn as the warning glyph the
+    // status panel puts on a conflicted row rather than as a letter. A letter
+    // sat unstyled against the path and read as its first character: `!` before
+    // `.obsidian/…` looked like part of the filename.
+    const groups: [string, { path: string; badge: string | null }[]][] = [
+      ["Conflicted", this.status.conflicted.map((e) => ({ path: e.path, badge: null }))],
+      ["Staged", this.status.staged.map((e) => ({ path: e.path, badge: e.index }))],
+      ["Unstaged", this.status.unstaged.map((e) => ({ path: e.path, badge: e.worktree }))],
+      ["Untracked", this.status.untracked.map((p) => ({ path: p, badge: "?" }))],
+    ];
+    let any = false;
+    for (const [name, items] of groups) {
+      if (items.length === 0) continue;
+      any = true;
+      const sec = c.createDiv({ cls: "ngb-section" });
+      sec.createEl("h3", { text: `${name} (${items.length})` });
+      const ul = sec.createEl("ul", { cls: "ngb-file-list" });
+      for (const it of items) {
+        const li = ul.createEl("li");
+        renderFileBadge(li, it.badge);
+        li.createSpan({ cls: "ngb-badge-path", text: it.path });
+      }
+    }
+    if (!any) c.createEl("p", { cls: "ngb-ok", text: "Working tree clean." });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/** Sparse safety verdict modal, including the mandated warning on failure. */
+/** Recovery actions offered on a blocked safety check (both confirmed first). */
+export interface SparseSafetyFixes {
+  /**
+   * Carry out the plan: trash the files that are on disk, drop the index-only
+   * entries, and report honestly on both halves. One call, because the user
+   * made one decision.
+   */
+  repair(plan: SparseRepairPlan): void;
+  /** Drop the sparse exclusion for these directories, so they stop being protected. */
+  unprotect(paths: string[]): void;
+}
+
+export class SparseSafetyModal extends Modal {
+  constructor(
+    app: App,
+    private report: SparseSafetyReport,
+    private warningText: string,
+    private fixes?: SparseSafetyFixes
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("ngb-modal");
+    this.titleEl.setText("Sparse checkout safety check");
+    const c = this.contentEl;
+    if (this.report.safe) {
+      c.createEl("p", {
+        cls: "ngb-ok",
+        text: "Safe: no protected sparse path appears as a Git change.",
+      });
+    } else {
+      c.createDiv({ cls: "ngb-warning", text: this.warningText });
+      const ul = c.createEl("ul", { cls: "ngb-file-list" });
+      for (const v of this.report.violations) {
+        ul.createEl("li", { text: `${v.path} — ${v.status} (${v.source})` });
+      }
+      c.createEl("p", {
+        cls: "ngb-settings-note",
+        text:
+          "Nothing is repaired automatically. The two fixes below are the usual ones; " +
+          "'Run diagnostics' inspects the sparse state, and anything else is resolved in Termux.",
+      });
+      this.renderFixes(c);
+    }
+    c.createDiv({
+      cls: "ngb-settings-note",
+      text: `Protected paths: ${this.report.protectedPaths.join(", ")} · checked ${this.report.checkedAt}`,
+    });
+  }
+
+  /**
+   * The two recoveries that actually apply here, side by side. Both stay on
+   * one row on a phone: equal flex widths, small type, labels truncated
+   * rather than wrapped, and the detail spelled out underneath instead of in
+   * the button.
+   */
+  private renderFixes(c: HTMLElement): void {
+    if (!this.fixes) return;
+    // What each blocking path actually needs, decided from both porcelain
+    // columns rather than from the collapsed human label. The old version read
+    // only the index column, offered "delete the files" for an entry that had
+    // no file on disk, moved nothing, and left the block exactly where it was.
+    const plan = planSparseRepair(this.report);
+    // Which protected directories the violations actually fall under; dropping
+    // the exclusion for anything else would be unrelated collateral.
+    const allPaths = [...new Set(this.report.violations.map((v) => v.path))];
+    const dirs = this.report.protectedPaths.filter((p) =>
+      allPaths.some((f) => f === p || f.startsWith(`${p}/`))
+    );
+    const repairable = plan.trash.length + plan.unstage.length;
+    if (repairable === 0 && dirs.length === 0) {
+      if (plan.blocked.length > 0) this.renderBlockedNote(c, plan);
+      return;
+    }
+    const row = c.createDiv({ cls: "ngb-fix-row" });
+    if (repairable > 0) {
+      // ONE button, because it is one decision: "get these out of the way".
+      // Whether that means the file, the index entry or both is git's business,
+      // not something the user should have to diagnose from a status code.
+      const label = this.repairLabel(plan);
+      const b = row.createEl("button", { cls: "ngb-fix-btn mod-warning", text: label });
+      b.setAttribute(
+        "aria-label",
+        `Clear ${repairable} blocking path${repairable === 1 ? "" : "s"} out of the way`
+      );
+      b.addEventListener("click", () => {
+        this.close();
+        this.fixes?.repair(plan);
+      });
+    }
+    if (dirs.length > 0) {
+      const b = row.createEl("button", { cls: "ngb-fix-btn", text: "Unprotect path" });
+      b.setAttribute("aria-label", `Remove ${dirs.join(", ")} from the sparse exclusions`);
+      b.addEventListener("click", () => {
+        this.close();
+        this.fixes?.unprotect(dirs);
+      });
+    }
+    const notes: string[] = [];
+    if (plan.trash.length > 0) {
+      notes.push(
+        `${plan.trash.length} file${plan.trash.length === 1 ? "" : "s"} go to Obsidian's trash (reversible; git history untouched).`
+      );
+    }
+    if (plan.unstage.length > 0) {
+      notes.push(
+        `${plan.unstage.length} entr${plan.unstage.length === 1 ? "y is" : "ies are"} removed from the index only — those are staged additions with no file on disk, which deleting alone cannot clear. Nothing committed is touched.`
+      );
+    }
+    if (dirs.length > 0) {
+      notes.push(
+        `Unprotect: removes ${dirs.join(", ")} from the sparse exclusions, so it is checked out and committed like any other directory.`
+      );
+    }
+    c.createDiv({ cls: "ngb-settings-note", text: notes.join(" ") });
+    if (plan.blocked.length > 0) this.renderBlockedNote(c, plan);
+  }
+
+  /** Button text names what will actually happen, not a fixed verb. */
+  private repairLabel(plan: SparseRepairPlan): string {
+    if (plan.trash.length === 0) return "Remove from index";
+    if (plan.unstage.length === 0) return "Delete files locally";
+    return "Delete and unstage";
+  }
+
+  /**
+   * The paths the plugin will not repair, and why. Listed rather than dropped:
+   * silently offering a button that covers three of five paths is how "the
+   * check still blocks after the fix" happens.
+   */
+  private renderBlockedNote(c: HTMLElement, plan: SparseRepairPlan): void {
+    const d = c.createDiv({ cls: "ngb-settings-note" });
+    d.createDiv({
+      text: `${plan.blocked.length} path${plan.blocked.length === 1 ? "" : "s"} cannot be repaired from here:`,
+    });
+    const ul = d.createEl("ul", { cls: "ngb-file-list" });
+    for (const b of plan.blocked.slice(0, 12)) ul.createEl("li", { text: `${b.path} — ${b.reason}` });
+    if (plan.blocked.length > 12) {
+      ul.createEl("li", { text: `…and ${plan.blocked.length - 12} more` });
+    }
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+/** Status modal: branch, counts, sparse state, bridge availability, active op. */
+export class StatusModal extends Modal {
+  constructor(
+    app: App,
+    private data: {
+      status?: GitStatusSummary;
+      sparse?: SparseStateSummary;
+      lastCommit?: { hash: string; date: string; subject: string };
+      lastSyncAt?: string;
+      bridgeAvailable: string;
+      activeOperation?: string;
+      fetchedAt?: string;
+    }
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("ngb-modal");
+    this.titleEl.setText("Native Git: status");
+    const c = this.contentEl;
+    const kv = c.createDiv({ cls: "ngb-kv" });
+    const row = (k: string, v: string) => {
+      kv.createDiv({ cls: "k", text: k });
+      kv.createDiv({ text: v });
+    };
+    const s = this.data.status;
+    if (s) {
+      row("Branch", s.detached ? "(detached)" : s.branch ?? "?");
+      row("Upstream", s.upstream ?? "—");
+      row("Ahead / behind", `${s.ahead} / ${s.behind}`);
+      row("Staged", String(s.staged.length));
+      row("Unstaged", String(s.unstaged.length));
+      row("Untracked", String(s.untracked.length));
+      row("Conflicted", String(s.conflicted.length));
+    } else {
+      row("Status", "not fetched yet");
+    }
+    if (this.data.lastCommit) {
+      row(
+        "Last commit",
+        `${this.data.lastCommit.hash.slice(0, 8)} · ${this.data.lastCommit.subject}`
+      );
+    }
+    const sp = this.data.sparse;
+    if (sp) {
+      row("Sparse checkout", sp.enabled ? "enabled" : "disabled");
+      row("Sparse mode", sp.coneMode === undefined ? "—" : sp.coneMode ? "cone" : "non-cone");
+      row("Sparse patterns", String(sp.patterns.length));
+      row("Skip-worktree entries", String(sp.skipWorktreeCount));
+    }
+    row("Bridge", this.data.bridgeAvailable);
+    row("Active operation", this.data.activeOperation ?? "none");
+    row("Last successful sync", this.data.lastSyncAt ?? "never");
+    if (this.data.fetchedAt) row("Fetched", this.data.fetchedAt);
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+// TextPreviewModal ("File at commit") lived here until 2026-08-27, when the
+// question it answered moved into a pane: src/ui/FileAtCommitView.ts renders
+// the same numbered, wrapped table under the same class names.

@@ -1,0 +1,389 @@
+import { ItemView, Notice, setIcon, WorkspaceLeaf } from "obsidian";
+import { describeFileChange, type FileLogEntry } from "../git/historyParsers";
+import { parseHunks, type DiffHunk } from "../git/hunks";
+import { describeRestore, restoreBlockInFile } from "../git/restoreBlock";
+import { markInvisibles, sizeGutter } from "./DiffView";
+import { renderHunkRange, renderUnifiedDiff } from "./diffDom";
+import { DIFF_COLOR_VARS } from "./colors";
+import type { InlineDiffUnit } from "../git/inlineDiff";
+
+export const NGB_FILE_HISTORY_VIEW = "native-git-bridge-file-history";
+
+export interface FileHistoryActions {
+  /** One page of commits touching this file; null when the operation failed. */
+  loadPage(path: string, skip: number, limit: number): Promise<FileLogEntry[] | null>;
+  /** The diff this commit introduced for the file. */
+  loadCommitDiff(entry: FileLogEntry): Promise<{ diff: string; truncated: boolean } | null>;
+  /** Current worktree text of the file, or null when it is binary/absent. */
+  readFile(path: string): Promise<string | null>;
+  writeFile(path: string, text: string): Promise<void>;
+  /**
+   * Put the restored block straight into the index.
+   *
+   * Composed rather than "write the file and stage the path": staging the whole
+   * path would sweep in every OTHER edit the file happens to carry, which is the
+   * opposite of restoring one block. A patch describing only this block leaves
+   * the rest of the file unstaged, exactly as it was.
+   *
+   * Returns false when the staging step failed; the file is already written by
+   * then, so the caller says so rather than claiming success.
+   */
+  stagePatch(patch: string): Promise<boolean>;
+  /** Whole-file restore, with the confirmation the command already has. */
+  restoreWholeFile(path: string, entry: FileLogEntry): void;
+  /** Show the file's full content as it was at this commit (read-only preview). */
+  viewAtCommit(entry: FileLogEntry): void;
+  /** Progress line of the operation currently in flight ("" when idle). */
+  progressText(): string;
+  /** What the runner said it is doing, for the reserved detail line. */
+  progressDetail(): string;
+  wrapLines(): boolean;
+  showInvisibles(): boolean;
+  /** Shared preference: compare changed lines by word or by character. */
+  inlineUnit(): InlineDiffUnit;
+  /** Custom colours as CSS variables, or null while the toggle is off. */
+  colors(): Record<string, string> | null;
+}
+
+/**
+ * History of one file: the commits that touched it, each expandable into the
+ * diff it introduced, with a restore button for the whole file and one per
+ * diff block. Structurally the same as the repository history panel, which is
+ * why it reuses its row classes; the difference is that every row here is the
+ * same file at a different point in time.
+ */
+export class FileHistoryView extends ItemView {
+  private path: string | null = null;
+  private entries: FileLogEntry[] = [];
+  private skip = 0;
+  private readonly pageSize = 30;
+  private exhausted = false;
+  private loading = false;
+  /** Interval behind the in-list wait indicator; one per load. */
+  private waitTicker: number | null = null;
+  private progressDetailEl: HTMLElement | null = null;
+  private expanded = new Set<string>();
+  private listEl: HTMLElement | null = null;
+  private moreBtn: HTMLButtonElement | null = null;
+  /**
+   * Diffs already fetched, by commit hash. Without it a theme switch or a
+   * colour tweak re-ran `diff-file` in Termux for every expanded commit —
+   * rerender() promises "no round trip" and now keeps that promise.
+   */
+  private diffCache = new Map<string, { diff: string; truncated: boolean } | null>();
+
+  constructor(leaf: WorkspaceLeaf, private actions: FileHistoryActions) {
+    super(leaf);
+    this.navigation = true;
+  }
+
+  getViewType(): string {
+    return NGB_FILE_HISTORY_VIEW;
+  }
+  getDisplayText(): string {
+    const base = this.path?.split("/").pop();
+    return base ? `History: ${base}` : "File history";
+  }
+  getIcon(): string {
+    // Not "history": that is the repository panel's icon, and on a narrow tab
+    // header the icon is what survives when the title is truncated.
+    return "file-clock";
+  }
+
+  override getState(): Record<string, unknown> {
+    return { path: this.path };
+  }
+
+  override async setState(state: unknown, result: unknown): Promise<void> {
+    const s = state as { path?: unknown } | null;
+    // Reload even when the path is unchanged: the panel is REUSED, so running
+    // "show history" again after a commit used to redisplay the stale list
+    // with no way to refresh it.
+    if (s && typeof s.path === "string") {
+      this.path = s.path;
+      this.entries = [];
+      this.diffCache.clear();
+      this.skip = 0;
+      this.exhausted = false;
+      this.expanded.clear();
+      this.renderShell();
+      await this.loadMore();
+    }
+    return super.setState(state, result as never);
+  }
+
+  async onOpen(): Promise<void> {
+    this.renderShell();
+    if (this.path !== null && this.entries.length === 0) await this.loadMore();
+  }
+
+  /**
+   * Redraw the loaded commits from memory — no Termux round trip. Used when a
+   * display preference (wrap, invisibles, colours) or the theme changes, so
+   * this panel follows them exactly like the diff pane does.
+   */
+  rerender(): void {
+    if (this.path === null) return;
+    const entries = this.entries;
+    this.renderShell();
+    for (const e of entries) this.renderCommit(e);
+    if (!this.exhausted) this.moreBtn?.show();
+  }
+
+  private renderShell(): void {
+    const c = this.contentEl;
+    c.empty();
+    c.addClass("ngb-status-view", "ngb-history-view", "ngb-filehist-view");
+    // Same regions as the other two panels. This pane shares the
+    // `ngb-status-view` class, which stops `.view-content` from scrolling, so
+    // it MUST provide its own scrolling body — without one the commits past the
+    // fold become unreachable with no scrollbar anywhere. It has no controls of
+    // its own, so there is no bottom bar.
+    const headEl = c.createDiv({ cls: "ngb-sv-head" });
+    const body = c.createDiv({ cls: "ngb-sv-body" });
+    // The full path, on ONE line: it is the only thing identifying which file
+    // this history belongs to, and wrapping it would push the commits down.
+    // It stays in the head so it is still on screen deep into the history.
+    const head = headEl.createDiv({ cls: "ngb-filehist-path ngb-mono" });
+    head.setText(this.path ?? "");
+    head.setAttribute("aria-label", this.path ?? "");
+    // Reserved even when empty (CSS keeps the height), mirroring the status
+    // panel: the commits below must not jump when the runner starts talking.
+    this.progressDetailEl = headEl.createDiv({ cls: "ngb-sv-progress-detail" });
+    this.updatePluginProgress();
+    this.listEl = body.createDiv({ cls: "ngb-hist-list" });
+    const btns = body.createDiv({ cls: "ngb-buttons" });
+    this.moreBtn = btns.createEl("button", { text: "Load more" });
+    this.moreBtn.addEventListener("click", () => void this.loadMore());
+    this.moreBtn.hide();
+  }
+
+  private async loadMore(): Promise<void> {
+    const path = this.path;
+    if (path === null || this.loading || this.exhausted) return;
+    this.loading = true;
+    const waiting = this.listEl?.createDiv({ cls: "ngb-filehist-waiting" });
+    const ticker = waiting ? this.renderWaiting(waiting, "Loading history") : null;
+    const page = await this.actions.loadPage(path, this.skip, this.pageSize);
+    waiting?.remove();
+    this.stopWaitTicker(ticker);
+    this.loading = false;
+    if (page === null) return;
+    if (this.skip === 0 && page.length === 0) {
+      this.listEl?.createEl("p", {
+        cls: "ngb-settings-note",
+        text: "No commits touch this file yet.",
+      });
+      return;
+    }
+    if (page.length < this.pageSize) {
+      this.exhausted = true;
+      this.moreBtn?.hide();
+    } else {
+      this.moreBtn?.show();
+    }
+    this.entries.push(...page);
+    this.skip += page.length;
+    for (const e of page) this.renderCommit(e);
+  }
+
+  /**
+   * The panel's own "the runner is working" indicator, repeated in place.
+   *
+   * Returns the timer it started, which the caller hands back to
+   * `stopWaitTicker`. There is one ticker for the whole panel but two things
+   * that wait — a page of history, and each expanded commit's diff — and
+   * nothing serialises them, so the indicator can change owner while a request
+   * is out.
+   */
+  private renderWaiting(el: HTMLElement, what: string): number | null {
+    el.empty();
+    const spin = el.createSpan({ cls: "ngb-anim-spin ngb-sv-icon-active" });
+    setIcon(spin, "refresh-cw");
+    const text = el.createSpan({ cls: "ngb-settings-note" });
+    const tick = () => {
+      const p = this.actions.progressText();
+      text.setText(p === "" ? `${what}…` : p);
+    };
+    tick();
+    // Remembered, not only registered: `registerInterval` ties the timer to the
+    // PANEL's lifetime, so one was left ticking per load, each writing into a
+    // node that had already been removed.
+    this.stopWaitTicker();
+    this.waitTicker = this.registerInterval(window.setInterval(tick, 500));
+    return this.waitTicker;
+  }
+
+  /**
+   * Stops the wait indicator. With an id, only if that wait still owns it: a
+   * request that finishes must not clear the indicator a later one is using,
+   * which would leave the spinner turning with a frozen progress line.
+   */
+  private stopWaitTicker(id?: number | null): void {
+    if (this.waitTicker === null) return;
+    if (id !== undefined && id !== this.waitTicker) return;
+    window.clearInterval(this.waitTicker);
+    this.waitTicker = null;
+  }
+
+  /**
+   * The plugin's per-second tick: what the runner said it is doing, on the
+   * reserved line, and only while the plugin's own operation runs — this
+   * panel's page loads have no stream of their own.
+   */
+  updatePluginProgress(): void {
+    if (!this.progressDetailEl) return;
+    const running = this.actions.progressText() !== "";
+    this.progressDetailEl.setText(running ? this.actions.progressDetail() : "");
+  }
+
+  private renderCommit(e: FileLogEntry): void {
+    if (!this.listEl) return;
+    const wrap = this.listEl.createDiv({ cls: "ngb-hist-commit" });
+    const header = wrap.createDiv({ cls: "ngb-sv-group-header ngb-hist-header" });
+    const chevron = header.createSpan({ cls: "ngb-sv-chevron" });
+    const open = this.expanded.has(e.hash);
+    setIcon(chevron, open ? "chevron-down" : "chevron-right");
+    const titles = header.createDiv({ cls: "ngb-hist-titles" });
+    titles.createDiv({ cls: "ngb-hist-subject", text: e.subject || "(no subject)" });
+    titles.createDiv({
+      cls: "ngb-settings-note ngb-hist-meta",
+      text: `${e.hash.slice(0, 8)} · ${e.date.slice(0, 16).replace("T", " ")} · ${e.author}`,
+    });
+    // What actually happened to the file in this commit.
+    titles.createDiv({ cls: "ngb-filehist-change", text: describeFileChange(e) });
+    // Restore the whole file from this commit. The label may be clipped on a
+    // narrow screen; the icon is a separate element and never is.
+    // Read-only preview of the whole file at this commit. It used to live in a
+    // separate modal reachable only from the command palette; the panel is the
+    // one place a file's history is answered, so it belongs here.
+    const viewAt = header.createEl("button", { cls: "ngb-filehist-restore ngb-filehist-viewat" });
+    const vi = viewAt.createSpan({ cls: "ngb-filehist-restore-icon" });
+    setIcon(vi, "eye");
+    viewAt.setAttribute("aria-label", `Show the file as it was at ${e.hash.slice(0, 8)}`);
+    viewAt.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this.actions.viewAtCommit(e);
+    });
+    const restore = header.createEl("button", { cls: "ngb-filehist-restore" });
+    const ic = restore.createSpan({ cls: "ngb-filehist-restore-icon" });
+    setIcon(ic, "rotate-ccw");
+    restore.createSpan({ cls: "ngb-filehist-restore-label", text: "Restore file" });
+    restore.setAttribute("aria-label", `Restore this file from ${e.hash.slice(0, 8)}`);
+    restore.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (this.path !== null) this.actions.restoreWholeFile(this.path, e);
+    });
+
+    const body = wrap.createDiv({ cls: "ngb-filehist-body" });
+    header.addEventListener("click", () => {
+      if (this.expanded.has(e.hash)) {
+        this.expanded.delete(e.hash);
+        setIcon(chevron, "chevron-right");
+        body.empty();
+        return;
+      }
+      this.expanded.add(e.hash);
+      setIcon(chevron, "chevron-down");
+      void this.renderCommitDiff(body, e);
+    });
+    if (open) void this.renderCommitDiff(body, e);
+  }
+
+  /**
+   * Obsidian calls this on every size change, including a rotation. The
+   * embedded diffs are the same diff2html DOM the diff pane renders, and its
+   * wrapped layout is measured, so they have to be re-measured here too.
+   */
+  override onResize(): void {
+    for (const pane of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".ngb-filehist-diff"))) {
+      pane.toggleClass("ngb-diff-wrap", this.actions.wrapLines());
+      sizeGutter(pane);
+    }
+  }
+
+  private async renderCommitDiff(body: HTMLElement, e: FileLogEntry): Promise<void> {
+    body.empty();
+    const cached = this.diffCache.get(e.hash);
+    let res: { diff: string; truncated: boolean } | null;
+    if (cached !== undefined) {
+      res = cached;
+    } else {
+      const ticker = this.renderWaiting(
+        body.createDiv({ cls: "ngb-filehist-waiting" }),
+        "Loading diff"
+      );
+      res = await this.actions.loadCommitDiff(e);
+      // Whoever starts the ticker stops it, on the same line as the await, the
+      // way `loadMore` here and both other panes already do. Without this the
+      // interval kept calling setText on the span `body.empty()` detached
+      // below, until the panel closed or another wait replaced it. By id,
+      // because a second expanded commit may own the indicator by now.
+      this.stopWaitTicker(ticker);
+      if (res !== null) this.diffCache.set(e.hash, res);
+    }
+    if (!this.expanded.has(e.hash)) return; // collapsed while we waited
+    body.empty();
+    if (res === null) {
+      body.createEl("p", { cls: "ngb-warning", text: "Could not load the diff (see the error message)." });
+      return;
+    }
+    if (res.diff.trim() === "") {
+      body.createEl("p", { cls: "ngb-ok", text: "No differences." });
+      return;
+    }
+    const hunks = parseHunks(res.diff);
+    const pane = body.createDiv({ cls: "ngb-diff-view ngb-filehist-diff" });
+    pane.toggleClass("ngb-diff-wrap", this.actions.wrapLines());
+    // The restore control goes in the hunk's own `@@` row, through the same
+    // hook the diff pane uses. It used to be a table row of its own inserted
+    // ABOVE that header, which put this panel's hunks in a different shape
+    // from the diff pane's for no reason — and, because that row was right
+    // aligned across a table as wide as the longest line of code, the button
+    // was pushed off the horizontal scroller and could not be seen at all.
+    renderUnifiedDiff(pane, res.diff, {
+      unit: this.actions.inlineUnit(),
+      hunkBar: (bar, _hunk, i) => {
+        const hunk = hunks[i];
+        if (hunk === undefined) return;
+        const b = bar.createEl("button", { cls: "ngb-hunk-btn" });
+        setIcon(b.createSpan({ cls: "ngb-hunk-btn-icon" }), "rotate-ccw");
+        b.createSpan({ text: "Restore this block" });
+        b.setAttribute("aria-label", `Restore this block from ${e.hash.slice(0, 8)}`);
+        b.addEventListener("click", () => void this.restoreBlock(hunk, e));
+        renderHunkRange(bar, _hunk);
+      },
+    });
+    // Same measured gutter and the same optional colours as the diff pane:
+    // this IS a diff pane, just embedded in a commit row.
+    sizeGutter(pane);
+    const colors = this.actions.colors();
+    for (const name of DIFF_COLOR_VARS) {
+      if (colors && colors[name]) pane.style.setProperty(name, colors[name]);
+      else pane.style.removeProperty(name);
+    }
+    if (this.actions.showInvisibles()) markInvisibles(pane);
+    if (res.truncated) {
+      body.createDiv({
+        cls: "ngb-warning",
+        text: "Diff truncated (too large). Restoring whole blocks may be incomplete.",
+      });
+    }
+  }
+
+  /** Put one block back the way this commit left it, or explain why not. */
+  private async restoreBlock(hunk: DiffHunk, e: FileLogEntry): Promise<void> {
+    const path = this.path;
+    if (path === null) return;
+    // The steps live in one place, shared with the diff pane opened from the
+    // commit history: this is the same act asked from a different list.
+    const outcome = await restoreBlockInFile(path, hunk, {
+      readFile: (p) => this.actions.readFile(p),
+      writeFile: (p, c) => this.actions.writeFile(p, c),
+      stagePatch: (patch) => this.actions.stagePatch(patch),
+    });
+    new Notice(describeRestore(outcome, e.hash.slice(0, 8)));
+    if (outcome.kind === "restored") this.rerender();
+  }
+}
+
