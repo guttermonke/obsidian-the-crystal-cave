@@ -1,5 +1,6 @@
 ---
 tags:
+  - "#Qigong"
 ---
 [[Synthesis: Somatic Anchor & Archetypal Bridge]]
 I. Core Integration Framework
