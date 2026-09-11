@@ -1,0 +1,340 @@
+/** Actions understood by the Termux runner. Phase 2 implements the first five. */
+export type BridgeAction =
+  | "ping"
+  | "status"
+  | "verify-sparse-safety"
+  | "sparse-reapply"
+  | "diagnostics"
+  // Phase 3+ (declared for forward-compat; runner rejects unknown actions):
+  | "fetch"
+  | "pull"
+  | "commit"
+  | "push"
+  | "sync"
+  | "file-log"
+  | "show-file-at-commit"
+  | "diff-file"
+  | "restore-file"
+  | "abort-merge"
+  // The repair, as four short steps the plugin sequences (see ops/repairJob).
+  // One long action lost the whole repair when Android killed Termux; a step
+  // loses one step, and the decisions between steps are unit-tested TypeScript.
+  | "repair-scan"
+  | "repair-fetch-missing"
+  | "repair-refetch"
+  | "repair-reset-upstream"
+  | "repair-drop-backup"
+  | "stage-file"
+  | "unstage-file"
+  | "discard-file"
+  | "stage-all"
+  | "unstage-all"
+  | "sparse-exclude-add"
+  | "sparse-exclude-remove"
+  | "exclude-add"
+  | "exclude-remove"
+  | "exclude-list"
+  | "repo-log"
+  | "resolve-conflict"
+  | "discard-all"
+  | "reset-all"
+  // Runner v11: the beginning of the story — a vault that is not a repository
+  // yet, or one without a remote.
+  | "init-repo"
+  | "set-remote"
+  | "clone-into-vault"
+  | "adopt-remote"
+  // The rebase state machine. Only the two exits are implemented: nothing in
+  // the plugin STARTS a rebase yet. They exist because an unfinished rebase can
+  // arrive from Termux, and until now the panel had no way out of one — the
+  // same dead end that unfinished merges were in.
+  | "abort-rebase"
+  | "continue-rebase"
+  /**
+   * Clear protected sparse paths out of the INDEX. The one thing the runner
+   * will do to a protected path, and only for paths that HEAD does not
+   * contain — see the runner for why that constraint is what makes it safe.
+   */
+  | "unstage-protected"
+  /**
+   * Apply one patch to the index or the working tree, forward or reversed.
+   * Stage, unstage and discard a hunk are the same operation pointed three
+   * ways, so they share one action.
+   */
+  | "apply-patch"
+  /**
+   * Stop tracking one file, keeping it on disk (`git rm --cached` semantics).
+   * The missing half of the tracked-file notice: an ignore rule cannot hide a
+   * tracked file, and this is what makes the rule able to.
+   */
+  | "untrack-file"
+  // Storage maintenance (v14): the object database only ever grows — every
+  // refetch ADDS a full pack and an interrupted download leaves a
+  // multi-gigabyte tmp file. Scan reports, prune drops what nothing reaches,
+  // repack dedupes. Sequenced by the plugin like the repair steps.
+  | "maintenance-scan"
+  | "maintenance-prune"
+  | "maintenance-repack"
+  // Repository footprint (v14): device decisions, transactional from the
+  // settings — the toggle reflects the repository's actual state and moves
+  // only after the action answers ok.
+  | "repo-shallow"
+  | "repo-unshallow"
+  | "repo-partial-enable"
+  | "repo-partial-disable"
+  /**
+   * Remove a stale `.git/index.lock` (v15). On Termux the runner first kills
+   * every other process of its uid, so nothing CAN be holding the lock; the
+   * companion trigger that delivers the request is the fresh Termux start.
+   */
+  | "repair-stale-lock"
+  // Re-seed the include-everything base of a non-cone sparse definition and
+  // drop git's own emptying default pattern, "!" + "/*" + "/" (v16) — the exit
+  // for a pattern file that hides everything below the top level, a state the
+  // verified write refuses to create but cannot fix once a repository arrives
+  // in it. (Line comments on purpose: the pattern itself would close a block
+  // comment.)
+  | "repair-sparse-definition"
+  /**
+   * Remove the GLOBAL git identity, value-free (v16). Refused — on both
+   * sides — while the repository has no local identity: with no local one the
+   * global identity is the only thing letting commits happen anywhere.
+   */
+  | "identity-drop-global"
+  /**
+   * Make the profile's credential file authoritative for this repository
+   * (v16): an empty local `credential.helper` resets the inherited list, so a
+   * global helper stops shadowing the profile's own store file.
+   */
+  | "cred-helper-local-reset"
+  /**
+   * Read-only triage for the unified repair (v16): the stale-lock facts (the
+   * lock's existence and age, live processes with their names), the set-aside
+   * previous repositories, and the ordinary status fields, in one round trip.
+   * The kill stays in repair-stale-lock; this only reads, so the plugin can
+   * show what would be killed and ask first.
+   */
+  | "repair-triage";
+
+/**
+ * Runner version each late-added action first appeared in. The pre-flight gate
+ * compares against THESE, not RUNNER_MIN_VERSION: the minimum moves with every
+ * runner change, but e.g. a v4 runner still executes the v4 config-management
+ * actions perfectly well. Actions absent here exist since the first supported
+ * runner. An old runner would answer a bare BAD_REQUEST ("action not allowed"),
+ * which reads like a plugin bug — the gate names the real cause up front.
+ */
+export const ACTION_MIN_RUNNER: ReadonlyMap<BridgeAction, number> = new Map([
+  ["sparse-exclude-add", 4],
+  ["sparse-exclude-remove", 4],
+  ["exclude-add", 4],
+  ["exclude-remove", 4],
+  ["exclude-list", 4],
+  ["repo-log", 5],
+  ["resolve-conflict", 6],
+  ["discard-all", 8],
+  ["reset-all", 8],
+  ["init-repo", 11],
+  ["set-remote", 11],
+  ["clone-into-vault", 11],
+  ["adopt-remote", 11],
+  ["abort-rebase", 11],
+  ["continue-rebase", 11],
+  ["unstage-protected", 11],
+  ["apply-patch", 12],
+  ["repair-scan", 13],
+  ["repair-fetch-missing", 13],
+  ["repair-refetch", 13],
+  ["repair-reset-upstream", 13],
+  ["repair-drop-backup", 13],
+  ["untrack-file", 14],
+  ["maintenance-scan", 14],
+  ["maintenance-prune", 14],
+  ["maintenance-repack", 14],
+  ["repo-shallow", 14],
+  ["repo-unshallow", 14],
+  ["repo-partial-enable", 14],
+  ["repo-partial-disable", 14],
+  ["repair-stale-lock", 15],
+  ["repair-sparse-definition", 16],
+  ["identity-drop-global", 16],
+  ["cred-helper-local-reset", 16],
+  ["repair-triage", 16],
+]);
+
+/** Actions that may modify repository state; serialized behind the operation lock. */
+export const MUTATING_ACTIONS: ReadonlySet<string> = new Set([
+  "sparse-reapply",
+  "pull",
+  "commit",
+  "push",
+  "sync",
+  "restore-file",
+  "abort-merge",
+  "repair-scan",
+  "repair-fetch-missing",
+  "repair-refetch",
+  "repair-reset-upstream",
+  "repair-drop-backup",
+  "stage-file",
+  "unstage-file",
+  "discard-file",
+  "stage-all",
+  "unstage-all",
+  "resolve-conflict",
+  "discard-all",
+  "reset-all",
+  "init-repo",
+  "set-remote",
+  "clone-into-vault",
+  "adopt-remote",
+  "abort-rebase",
+  "continue-rebase",
+  "unstage-protected",
+  "apply-patch",
+  "untrack-file",
+  "maintenance-prune",
+  "maintenance-repack",
+  "repo-shallow",
+  "repo-unshallow",
+  "repo-partial-enable",
+  "repo-partial-disable",
+  "repair-stale-lock",
+  "repair-sparse-definition",
+  "identity-drop-global",
+  "cred-helper-local-reset",
+]);
+
+export interface BridgeRequest {
+  protocolVersion: number;
+  id: string;
+  token: string;
+  action: BridgeAction;
+  createdAt: string;
+  timeoutSeconds: number;
+  args: Record<string, unknown>;
+  /**
+   * Which paired vault this request belongs to (runner v10+). It is an opaque
+   * id the runner LOOKS UP; a repository path is never sent. Omitted while this
+   * vault has not learned its profile yet (an older pairing), in which case the
+   * request directory it lands in decides — and the token still has to match.
+   */
+  profileId?: string;
+}
+
+/**
+ * Codes this plugin knows how to explain; the runner may add new ones.
+ *
+ * Every member here is one the runner actually sends, plus `TIMEOUT`, which the
+ * plugin raises itself when the result file never arrives. A result file that
+ * exists but does not parse is deliberately NOT a code: the runner writes it
+ * non-atomically, so `parseResult` returning null means "still being written,
+ * ask again", and a file that never becomes valid ends as `TIMEOUT` like one
+ * that never appeared.
+ */
+export type KnownBridgeErrorCode =
+  | "AUTH"
+  | "BAD_REQUEST"
+  | "GIT_FAILED"
+  | "CANCELLED"
+  | "SAFETY_BLOCKED"
+  | "TIMEOUT"
+  | "CONFLICT"
+  | "EXPIRED"
+  | "RUNNER_INTERNAL"
+  | "FILE_ABSENT"
+  | "TOO_LARGE"
+  /** The profile's repository is gone or is no longer a work tree (runner v10+). */
+  | "REPO_MISSING"
+  /** Refusing to initialise or clone over a repository that already exists (v11). */
+  | "REPO_EXISTS";
+
+/**
+ * `(string & {})` keeps the literals visible to autocompletion while still
+ * accepting a code from a newer runner. A plain `| string` union erased them.
+ */
+export interface BridgeErrorInfo {
+  code: KnownBridgeErrorCode | (string & {});
+  message: string;
+  stdout?: string;
+  stderr?: string;
+}
+
+export interface BridgeResult {
+  protocolVersion: number;
+  id: string;
+  action: string;
+  ok: boolean;
+  exitCode: number;
+  startedAt?: string;
+  finishedAt?: string;
+  runnerVersion?: number;
+  /** The profile that answered (runner v10+); how a vault learns its own id. */
+  profileId?: string;
+  data?: Record<string, string>;
+  error?: BridgeErrorInfo | null;
+}
+
+/** One porcelain entry, either v1 or v2 derived. */
+export interface GitFileEntry {
+  path: string;
+  origPath?: string;
+  /** index (staged) status char, "." when unchanged */
+  index: string;
+  /** worktree status char, "." when unchanged */
+  worktree: string;
+}
+
+export interface GitStatusSummary {
+  oid?: string;
+  branch?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+  staged: GitFileEntry[];
+  unstaged: GitFileEntry[];
+  untracked: string[];
+  conflicted: GitFileEntry[];
+  /**
+   * Files inside fully untracked directories, keyed by the directory entry as
+   * it appears in `untracked` (with its trailing slash). git status collapses
+   * such a directory to one "dir/" line; a v5+ runner enumerates the files so
+   * the panel can show them. Absent on results from older runners.
+   */
+  untrackedChildren?: Record<string, string[]>;
+}
+
+export interface SparseStateSummary {
+  enabled: boolean;
+  coneMode: boolean | undefined;
+  patterns: string[];
+  skipWorktreeCount: number;
+}
+
+export interface SparseSafetyViolation {
+  path: string;
+  status: string;
+  source: "worktree" | "staged";
+  /**
+   * The two porcelain columns as git reported them, "." for a blank one.
+   * Kept because the human-readable `status` collapses them and loses the fact
+   * that decides what can be repaired: `AD` is an index entry whose file is
+   * NOT on disk, and no amount of deleting files will clear it.
+   */
+  index?: string;
+  worktree?: string;
+}
+
+export interface SparseSafetyReport {
+  safe: boolean;
+  violations: SparseSafetyViolation[];
+  protectedPaths: string[];
+  checkedAt: string;
+}
+
+export interface OperationMarker {
+  id: string;
+  action: string;
+  startedAt: number;
+}
