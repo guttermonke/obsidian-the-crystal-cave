@@ -1,4 +1,4 @@
-#  [[#Android Security Checkli
+#  [[#Android Security Checklist]]
 ### Post-malware recovery & hardening, for when things feel "off"
 
 ---
