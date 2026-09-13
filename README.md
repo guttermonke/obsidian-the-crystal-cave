@@ -1,1 +1,1 @@
-# obsidian-the-crystal2026-09-10T17:53:41.418Z input diagnostics enabled-cave#
+# obsidian-the-crystal-cave#
