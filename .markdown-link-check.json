@@ -1,0 +1,18 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "^https://docs\.base44\.com/"
+    },
+    {
+      "pattern": "^https://public-api\.wordpress\.com/"
+    },
+    {
+      "pattern": "^https://mintcdn\.com/"
+    },
+    {
+      "pattern": "^obsidian://"
+    }
+  ],
+  "replacementPatterns": [],
+  "verbose": false
+}
