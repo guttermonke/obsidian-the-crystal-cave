@@ -29,15 +29,15 @@ jobs:
         run: |
           # Make the script executable
           chmod +x scripts/pydroid/pydroid-automate.sh
-        
+
           # Create test directories
           mkdir -p TestScripts TestOutputs TestNotes
-        
+
           # Copy sample script to test directory
           cp scripts/pydroid/sample-script.py TestScripts/
-        
+
           # Run the automation in dry-run mode
-          scripts/pydroid/pydroid-automate.sh \
+          ./scripts/pydroid/pydroid-automate.sh \
             --scripts-dir TestScripts \
             --output-dir TestOutputs \
             --notes-dir TestNotes \
@@ -47,7 +47,7 @@ jobs:
       - name: Run pydroid-automate.sh for real
         run: |
           # Run without dry-run to actually process
-          scripts/pydroid/pydroid-automate.sh \
+          ./scripts/pydroid/pydroid-automate.sh \
             --scripts-dir TestScripts \
             --output-dir TestOutputs \
             --notes-dir TestNotes \

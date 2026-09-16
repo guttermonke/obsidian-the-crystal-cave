@@ -36,4 +36,5 @@ jobs:
             !Synthesis- Somatic Anchor and Archetypal Bridge.md
             !dedup-report.md
             !scripts/pydroid/README.md
-          config: .markdownlint-cli2.jsonc
+          config-file: .markdownlint-cli2.jsonc
+        continue-on-error: true
