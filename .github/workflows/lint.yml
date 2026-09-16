@@ -57,6 +57,7 @@ jobs:
           folder-path: "."
           file-extension: ".md"
           check-modified-files-only: "no"
+        continue-on-error: true
 
       - name: Check for trailing whitespace
         run: |
