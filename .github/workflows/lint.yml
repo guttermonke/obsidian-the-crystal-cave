@@ -21,12 +21,7 @@ jobs:
             **/*.md
             !node_modules/**
             !.git/**
-          config: |
-            {
-              "MD013": false,  # Allow line length > 80
-              "MD024": false,  # Allow multiple headings with same content
-              "MD033": false   # Allow inline HTML
-            }
+          config-file: .markdownlint-cli2.jsonc
 
       - name: Lint Shell scripts with ShellCheck
         run: |
