@@ -34,4 +34,6 @@ jobs:
             !Untitled*.md
             !The Form Of Sound.md
             !Synthesis- Somatic Anchor and Archetypal Bridge.md
+            !dedup-report.md
+            !scripts/pydroid/README.md
           config: .markdownlint-cli2.jsonc
