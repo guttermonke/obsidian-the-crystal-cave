@@ -21,6 +21,8 @@ jobs:
             **/*.md
             !node_modules/**
             !.git/**
+            !Base 44 Documentation index.md
+            !obsidian-native-git-bridge-0.6.7/**
           config-file: .markdownlint-cli2.jsonc
 
       - name: Lint Shell scripts with ShellCheck
