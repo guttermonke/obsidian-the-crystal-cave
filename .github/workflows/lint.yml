@@ -38,12 +38,12 @@ jobs:
         run: |
           # Find all shell scripts
           SCRIPTS=$(find . -type f \( -name "*.sh" -o -name "*.bash" \) ! -path "./.git/*" ! -path "./node_modules/*")
-          
+
           if [ -z "$SCRIPTS" ]; then
             echo "No shell scripts found to lint."
             exit 0
           fi
-          
+
           echo "Linting shell scripts..."
           echo "$SCRIPTS" | while IFS= read -r script; do
             echo "Checking: $script"
@@ -63,7 +63,7 @@ jobs:
         run: |
           # Find files with trailing whitespace
           FILES_WITH_TRAILING=$(git ls-files | xargs grep -l "[[:space:]]$" | grep -v ".git/" || true)
-          
+         
           if [ -n "$FILES_WITH_TRAILING" ]; then
             echo "::error::Files with trailing whitespace found:"
             echo "$FILES_WITH_TRAILING"
@@ -74,7 +74,7 @@ jobs:
         run: |
           # Ensure all shell scripts are executable
           NON_EXEC_SCRIPTS=$(find . -type f \( -name "*.sh" -o -name "*.bash" \) ! -path "./.git/*" ! -perm -0755)
-          
+         
           if [ -n "$NON_EXEC_SCRIPTS" ]; then
             echo "::warning::Non-executable shell scripts found:"
             echo "$NON_EXEC_SCRIPTS"
