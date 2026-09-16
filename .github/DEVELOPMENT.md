@@ -340,3 +340,115 @@ pip install -r requirements.txt
 ---
 
 *Last updated: 2026-09-16*
+
+---
+
+## 🤖 Attribution
+
+**Automation scripts and GitHub Actions workflows** were created by **Vibe Code** (Mistral AI's async software-engineering agent).
+
+**Repository:** [mistralai/agent](https://github.com/mistralai/agent)  
+**Session:** 4ea4a2d5-0c99-4d18-b6fb-7c97fb33f516  
+**Date:** 2026-09-16
+
+---
+
+## 🐙 Octopus Attribution System
+
+This repository uses a **tagging system for attribution** to track contributions across multiple agents and collaborators (the "arms of the octopus").
+
+### Tag Format
+
+Use YAML frontmatter in Markdown files and comments in scripts:
+
+```markdown
+---
+tags:
+  - attribution/author:vibe-code
+  - attribution/date:2026-09-16
+  - attribution/session:4ea4a2d5-0c99-4d18-b6fb-7c97fb33f516
+  - attribution/type:automation
+---
+```
+
+Or in shell scripts:
+```bash
+# @attribution author:vibe-code
+# @attribution date:2026-09-16
+# @attribution session:4ea4a2d5-0c99-4d18-b6fb-7c97fb33f516
+# @attribution type:automation
+```
+
+### Tag Categories
+
+| Category | Format | Example |
+|----------|--------|---------|
+| **Author** | `attribution/author:{name}` | `attribution/author:vibe-code` |
+| **Date** | `attribution/date:{YYYY-MM-DD}` | `attribution/date:2026-09-16` |
+| **Session** | `attribution/session:{uuid}` | `attribution/session:4ea4a2d5...` |
+| **Type** | `attribution/type:{type}` | `attribution/type:automation` |
+| **Agent** | `attribution/agent:{name}` | `attribution/agent:mistral-vibe` |
+| **Collaborator** | `attribution/collab:{name}` | `attribution/collab:guttermonke` |
+
+### Type Values
+
+- `automation` - Scripts, workflows, CI/CD
+- `content` - Markdown, documentation, notes
+- `code` - Application code, libraries
+- `config` - Configuration files
+- `refactor` - Code restructuring
+- `bugfix` - Bug fixes
+- `feature` - New features
+
+### Querying Attribution
+
+**Find all files by an author:**
+```bash
+# Markdown files
+grep -r "attribution/author:vibe-code" --include="*.md" .
+
+# Shell scripts
+grep -r "@attribution author:vibe-code" --include="*.sh" .
+```
+
+**Find all files from a session:**
+```bash
+grep -r "attribution/session:4ea4a2d5-0c99-4d18-b6fb-7c97fb33f516" .
+```
+
+**Generate attribution report:**
+```bash
+# Count contributions by author
+grep -rh "attribution/author:" --include="*.md" . | sort | uniq -c
+```
+
+### Attribution in Git Commits
+
+Use commit message tags for tracking:
+```
+feat: add automation scripts
+
+Attribution: author=vibe-code
+Attribution: session=4ea4a2d5-0c99-4d18-b6fb-7c97fb33f516
+Attribution: type=automation
+```
+
+### The Octopus Model
+
+Think of the repository as an **octopus**:
+- **Head:** Main branch (`main`) - the central brain
+- **Arms:** Multiple agents, collaborators, tools working in parallel
+- **Tentacles:** Individual contributions flowing into the head
+- **Suction cups:** Tags that attach attribution to each contribution
+
+Each "arm" (agent/collaborator) can work independently, but all contributions are tracked and attributed back to the source. The tagging system ensures nothing gets lost between the arms.
+
+### Current Attribution Tags Applied
+
+This session's work is tagged with:
+- `attribution/author:vibe-code`
+- `attribution/session:4ea4a2d5-0c99-4d18-b6fb-7c97fb33f516`
+- `attribution/date:2026-09-16`
+- `attribution/type:automation`
+
+All new files created in this session carry these tags.
