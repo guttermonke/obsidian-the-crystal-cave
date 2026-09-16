@@ -29,13 +29,13 @@ jobs:
         run: |
           # Make the script executable
           chmod +x scripts/pydroid/pydroid-automate.sh
-         
+        
           # Create test directories
           mkdir -p TestScripts TestOutputs TestNotes
-         
+        
           # Copy sample script to test directory
           cp scripts/pydroid/sample-script.py TestScripts/
-         
+        
           # Run the automation in dry-run mode
           scripts/pydroid/pydroid-automate.sh \
             --scripts-dir TestScripts \
@@ -52,7 +52,7 @@ jobs:
             --output-dir TestOutputs \
             --notes-dir TestNotes \
             --verbose
-         
+        
           # Verify outputs were created
           if [ -f TestOutputs/sample_script_*_report.json ]; then
             echo "JSON output created successfully"
@@ -60,14 +60,14 @@ jobs:
             echo "::error::JSON output not found"
             exit 1
           fi
-         
+        
           if [ -f TestNotes/sample_script_*_report.md ]; then
             echo "Markdown note created successfully"
           else
             echo "::error::Markdown note not found"
             exit 1
           fi
-         
+        
           # Show generated files
           echo "Generated files:"
           ls -la TestOutputs/ TestNotes/
