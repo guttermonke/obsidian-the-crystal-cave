@@ -1,0 +1,77 @@
+name: Pydroid Automation Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/pydroid/**'
+      - 'Scripts/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/pydroid/**'
+      - 'Scripts/**'
+
+jobs:
+  test-pydroid-automation:
+    name: Test Pydroid Automation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Test pydroid-automate.sh script
+        run: |
+          # Make the script executable
+          chmod +x scripts/pydroid/pydroid-automate.sh
+          
+          # Create test directories
+          mkdir -p TestScripts TestOutputs TestNotes
+          
+          # Copy sample script to test directory
+          cp scripts/pydroid/sample-script.py TestScripts/
+          
+          # Run the automation in dry-run mode
+          scripts/pydroid/pydroid-automate.sh \
+            --scripts-dir TestScripts \
+            --output-dir TestOutputs \
+            --notes-dir TestNotes \
+            --dry-run \
+            --verbose
+
+      - name: Run pydroid-automate.sh for real
+        run: |
+          # Run without dry-run to actually process
+          scripts/pydroid/pydroid-automate.sh \
+            --scripts-dir TestScripts \
+            --output-dir TestOutputs \
+            --notes-dir TestNotes \
+            --verbose
+          
+          # Verify outputs were created
+          if [ -f TestOutputs/sample_script_*_report.json ]; then
+            echo "JSON output created successfully"
+          else
+            echo "::error::JSON output not found"
+            exit 1
+          fi
+          
+          if [ -f TestNotes/sample_script_*_report.md ]; then
+            echo "Markdown note created successfully"
+          else
+            echo "::error::Markdown note not found"
+            exit 1
+          fi
+          
+          # Show generated files
+          echo "Generated files:"
+          ls -la TestOutputs/ TestNotes/
+
+      - name: Clean up test files
+        run: |
+          rm -rf TestScripts TestOutputs TestNotes

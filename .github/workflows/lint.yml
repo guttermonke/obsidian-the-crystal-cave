@@ -1,0 +1,76 @@
+name: Lint and Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint Markdown and Shell Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lint Markdown files
+        uses: DavidAnson/markdownlint-cli2-action@v15
+        with:
+          globs: |
+            **/*.md
+            !node_modules/**
+            !.git/**
+          config: |
+            {
+              "MD013": false,  # Allow line length > 80
+              "MD024": false,  # Allow multiple headings with same content
+              "MD033": false   # Allow inline HTML
+            }
+
+      - name: Lint Shell scripts with ShellCheck
+        run: |
+          # Find all shell scripts
+          SCRIPTS=$(find . -type f \( -name "*.sh" -o -name "*.bash" \) ! -path "./.git/*" ! -path "./node_modules/*")
+          
+          if [ -z "$SCRIPTS" ]; then
+            echo "No shell scripts found to lint."
+            exit 0
+          fi
+          
+          echo "Linting shell scripts..."
+          echo "$SCRIPTS" | while IFS= read -r script; do
+            echo "Checking: $script"
+            shellcheck "$script" || true
+          done
+
+      - name: Check for broken Markdown links
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: "yes"
+          config-file: ".markdown-link-check.json"
+          folder-path: "."
+          file-extensions: ".md"
+          check-modified-files-only: "no"
+
+      - name: Check for trailing whitespace
+        run: |
+          # Find files with trailing whitespace
+          FILES_WITH_TRAILING=$(git ls-files | xargs grep -l "[[:space:]]$" | grep -v ".git/" || true)
+          
+          if [ -n "$FILES_WITH_TRAILING" ]; then
+            echo "::error::Files with trailing whitespace found:"
+            echo "$FILES_WITH_TRAILING"
+            exit 1
+          fi
+
+      - name: Check file permissions for shell scripts
+        run: |
+          # Ensure all shell scripts are executable
+          NON_EXEC_SCRIPTS=$(find . -type f \( -name "*.sh" -o -name "*.bash" \) ! -path "./.git/*" ! -perm -0755)
+          
+          if [ -n "$NON_EXEC_SCRIPTS" ]; then
+            echo "::warning::Non-executable shell scripts found:"
+            echo "$NON_EXEC_SCRIPTS"
+            echo "Run: chmod +x on these files"
+          fi
