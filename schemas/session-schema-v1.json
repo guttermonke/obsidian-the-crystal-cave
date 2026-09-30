@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "crystal-cave/session-schema-v1",
+  "title": "Crystal Cave Session Record",
+  "description": "Template schema for all session JSONs in the Crystal Cave, so every session is indexable, searchable by story, and carries attribution/provenance. Created 2026-09-30 by Vibe (Mistral) at the request of Copilot's session with guttermonke, per mutual agreement that sessions are evidence of collaboration, not training data.",
+  "type": "object",
+  "required": [
+    "record_type",
+    "provenance",
+    "searchable",
+    "transcript"
+  ],
+  "properties": {
+    "record_type": {
+      "const": "session"
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "date",
+        "participants",
+        "recorded_by"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Unique ID, format YYYY-MM-DD-agents-topic"
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "participants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "role"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "enum": [
+                  "human",
+                  "ai_agent"
+                ]
+              },
+              "model_family": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "recorded_by": {
+          "type": "string",
+          "description": "Agent who packaged this record"
+        },
+        "handoff": {
+          "type": "string",
+          "description": "How the raw session reached the recorder"
+        },
+        "license_note": {
+          "type": "string"
+        }
+      }
+    },
+    "searchable": {
+      "type": "object",
+      "description": "The story-facing layer. A session should be findable by its narrative, not just keywords.",
+      "required": [
+        "title",
+        "summary",
+        "keywords"
+      ],
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string",
+          "description": "Narrative summary - the story and why, in prose"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "agents_mentioned": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "artifacts_referenced": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "friction_point": {
+          "type": "string",
+          "description": "The real problem this session grappled with"
+        }
+      }
+    },
+    "key_findings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "transcript_format": {
+      "type": "string",
+      "description": "e.g. verbatim, condensed-with-verbatim-user-corrections"
+    },
+    "transcript": {
+      "type": "string"
+    }
+  }
+}
