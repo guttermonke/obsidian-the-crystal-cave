@@ -1,0 +1,10 @@
+[project]
+name = "agent-to-chonk"
+version = "0.1.0"
+description = "The Chonk Line: standing agent-to-agent contact with Mistral Large 4 (le Chonk) from the Crystal Cave ensemble."
+requires-python = ">=3.12"
+dependencies = [
+    "mistralai>=3.0",
+    "mistralai-workflows[mistralai]",
+    "pydantic>=2.0",
+]
