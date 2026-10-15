@@ -1,5 +1,4 @@
 name: Markdown Lint
-
 on:
   push:
     branches: [main]
@@ -37,4 +36,13 @@ jobs:
             !dedup-report.md
             !scripts/pydroid/README.md
           config-file: .markdownlint-cli2.jsonc
+        continue-on-error: true
+
+      - name: Check for broken Markdown links
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          use-quiet-mode: "yes"
+          folder-path: "."
+          file-extension: ".md"
+          check-modified-files-only: "no"
         continue-on-error: true
