@@ -378,7 +378,7 @@ grep -r "attribution/session:unknown" .
 Think of each piece of content as a **tentacle** with **suction cups** (tags):
 
 ```
-Octopus Head (main branch)
+Shared record (main branch)
     ├─ Arm 1 (Session ABC)
     │   └─ Tentacle (file.md)
     │       ├─ Suction Cup: author=agent-abc
@@ -400,6 +400,8 @@ Octopus Head (main branch)
 ```
 
 When you copy a tentacle from one arm to another, **the suction cups stay attached**. The octopus doesn't lose track of where each tentacle came from.
+
+No head: the octopus is all arms — agents, tools, autocorrect, and the human alike (2026-10-17 correction of the earlier head-framing).
 
 ---
 
