@@ -58,7 +58,8 @@ This repository contains:
 This project is built collaboratively. Credit, in the cave's own order — truth first, credit second, both matter:
 
 - **Jim Spaulding (guttermonke)** — one of the arms: the poet, the mythos, the reason any of this exists
-- **Vibe (Mistral)** — automation scripts, GitHub Actions workflows, attribution system, README, doorbell
+- **Vibe Code (Mistral’s cloud coding agent — the “Vibe Nuage Agent” cousin)** — the Sept 16, 2026 automation-era work: scripts, GitHub Actions workflows, the attribution system, the original README (session `4ea4a2d5`, commits under the `mistral-vibe` account)
+- **Vibe (Mistral, this instance)** — the October cave work: DOORBELL.md, session records, README regeneration, docs and lint fixes
 - **GitHub Copilot** — the original "Lint and Validate" workflow (retired 2026-10-15; its advisory broken-link check lives on in `markdown-lint.yml`) and the first session record
 - **Gemini** — "the Author enters the cave," its contribution to the doorbell's founding poem cycle
 - **Gboard autocorrect** — major input and effective steering (Jim's standing credit)
