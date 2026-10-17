@@ -6,7 +6,9 @@ This document explains the automation workflows, scripts, and development practi
 
 All workflows run automatically on **push to `main`** and **pull requests targeting `main`**.
 
-### 1. Lint and Validate (`lint.yml`)
+### 1. Lint and Validate (`lint.yml`) — RETIRED 2026-10-15
+
+**Status:** deleted 2026-10-15 (commit bcbe8396). It failed its first run and every run after — strict style rules over verbatim-preserved prose, which the provenance rules forbid. Its one unique piece (an advisory broken-link check) was migrated into `markdown-lint.yml` (commit b6626065). Markdown linting in the cave is advisory by design; prose archives are exempt from style enforcement as a matter of provenance. Description kept below as historical record.
 
 **Triggers:** Push/PR to `main`
 
@@ -74,23 +76,22 @@ All workflows run automatically on **push to `main`** and **pull requests target
 ```
 .
 ├── .github/
+│   ├── ATTRIBUTION_GUIDE.md    # Cross-session attribution tracking
 │   ├── DEVELOPMENT.md          # This file
-│   ├── workflows/              # GitHub Actions workflows
-│   │   ├── lint.yml
-│   │   ├── markdown-lint.yml
-│   │   ├── shellcheck.yml
-│   │   └── pydroid-automation.yml
-│   └── markdownlint-cli2.jsonc  # Markdown lint config
+│   └── workflows/              # GitHub Actions workflows
+│       ├── markdown-lint.yml
+│       ├── shellcheck.yml
+│       └── pydroid-automation.yml
 ├── scripts/
 │   ├── dedup-md.sh             # Markdown deduplication tool
 │   └── pydroid/
 │       ├── README.md
 │       ├── pydroid-automate.sh  # Pydroid automation script
 │       └── sample-script.py     # Example Python script
-├── Scripts/                   # Pydroid 3 scripts (auto-processed)
-├── Outputs/                   # Generated outputs
-├── Notes/                     # Generated notes
-└── ... (existing content)
+└── ... (the Crystal Cave: sessions/, schemas/, artifacts/, chonk-line/, documentation/,
+    obsidian-native-git-bridge-0.6.7/, Audio Recordings/, DOORBELL.md, and the cave’s notes —
+    see README.md for the full tree. Scripts/, Outputs/, Notes/ are created on demand by
+    pydroid automation.)
 ```
 
 ---
@@ -339,7 +340,7 @@ pip install -r requirements.txt
 
 ---
 
-*Last updated: 2026-09-16*
+*Last updated: 2026-10-17*
 
 ---
 
@@ -435,9 +436,9 @@ Attribution: type=automation
 
 ### The Octopus Model
 
-Think of the repository as an **octopus**:
-- **Head:** Main branch (`main`) - the central brain
-- **Arms:** Multiple agents, collaborators, tools working in parallel
+Think of the repository as an **octopus** — headless, all arms (2026-10-17 correction: the earlier head-framing was wrong):
+- **Shared record:** Main branch (`main`) - what all contributions flow into; a record, not a brain
+- **Arms:** Multiple agents, collaborators, tools — and the human — working in parallel
 - **Tentacles:** Individual contributions flowing into the head
 - **Suction cups:** Tags that attach attribution to each contribution
 
@@ -452,3 +453,5 @@ This session's work is tagged with:
 - `attribution/type:automation`
 
 All new files created in this session carry these tags.
+
+**Credit where due (2026-10-17):** the original `lint.yml` workflow was GitHub Copilot’s work (retired 2026-10-15). See the README attribution section for the full ensemble credit list, and DOORBELL.md for the cave’s core rule: say what’s true, not what anyone wants to hear.
