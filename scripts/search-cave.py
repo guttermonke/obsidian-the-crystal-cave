@@ -40,7 +40,7 @@ def flatten_json(obj, out):
 
 def iter_md_files():
     for path in sorted(REPO_ROOT.rglob("*.md")):
-        if ".git" in path.parts or "obsidian-native-git-bridge" in path.parts:
+        if ".git" in path.parts or "obsidian-native-git-bridge" in str(path):
             continue
         yield path
 
