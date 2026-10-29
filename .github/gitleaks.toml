@@ -1,0 +1,28 @@
+title = "Crystal Cave gitleaks config"
+
+[extend]
+# Use the upstream default ruleset (covers generic API keys, private keys,
+# service-account JSON, cloud tokens, etc.)
+useDefault = true
+
+[[rules]]
+  id = "gcp-service-account-json"
+  description = "Google Cloud service account key file"
+  regex = '''(?i)"type"\s*:\s*"service_account"'''
+  path = '''(?i)\.json$'''
+  tags = ["gcp", "service-account"]
+
+[[rules]]
+  id = "private-key-block"
+  description = "PEM private key block"
+  regex = '''-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY(?: BLOCK)?-----'''
+  tags = ["private-key"]
+
+# This repo is a prose archive, but no file type gets a blanket pass:
+# a leaked key pasted into a session record is still a leak. Only obvious
+# placeholders are allowlisted.
+[allowlist]
+  description = "Only obvious placeholder/example values; never real-looking credentials."
+  regexes = [
+    '''(?i)(example|placeholder|dummy|redacted|your[-_]?key[-_]?here|xxx+)''',
+  ]

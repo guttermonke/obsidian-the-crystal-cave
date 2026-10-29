@@ -34,6 +34,11 @@ This repository contains:
 ./scripts/dedup-md.sh --report
 ./scripts/dedup-md.sh --list
 
+# Search the cave by story, not filename
+./scripts/search-cave.py "suno" --sessions-only
+./scripts/search-cave.py --by-arm gemini
+./scripts/search-cave.py --list-arms
+
 # Pydroid automation (dry run first)
 ./scripts/pydroid/pydroid-automate.sh --dry-run --verbose
 ```
@@ -49,6 +54,7 @@ This repository contains:
 | [`.github/ATTRIBUTION_GUIDE.md`](./.github/ATTRIBUTION_GUIDE.md) | Cross-session attribution tracking |
 | [`chonk-line/SETUP-FOR-AGENTS.md`](./chonk-line/SETUP-FOR-AGENTS.md) | Chonk Line worker setup, addressed to the hosting agent |
 | [`scripts/dedup-md.sh`](./scripts/dedup-md.sh) | Find and handle duplicate Markdown files |
+| [`scripts/search-cave.py`](./scripts/search-cave.py) | Full-text search across prose + session records (`--by-arm`, `--sessions-only`) |
 | [`scripts/pydroid/pydroid-automate.sh`](./scripts/pydroid/pydroid-automate.sh) | Pydroid 3 automation workflow |
 
 ---
