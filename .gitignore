@@ -1,0 +1,39 @@
+# Cloud-sync / OS noise that must never be committed (14GB audio blobs etc.)
+[Aa]udio [Rr]ecordings/
+*.m4a
+*.mp3
+*.wav
+*.aac
+*.flac
+*.ogg
+*.opus
+
+# OneDrive / cloud-drive sync folders pulled into clones
+[Oo]ne[Dd]rive/
+[Gg]oogle [Dd]rive/
+[Dd]ropbox/
+[i][Cc]loud/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.obsidian/workspace*
+.obsidian/cache/
+
+# Secrets - never commit
+.env
+.env.*
+*.pem
+*service*account*.json
+*key*.json
+!.github/gitleaks.toml
+moonlit-gamma-*.json
+
+# Local tooling output
+Outputs/
+Scripts/
+dedup-report.md
+__pycache__/
+*.pyc
